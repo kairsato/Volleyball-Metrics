@@ -2,14 +2,13 @@ import { useEffect, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
-import CardActionArea from "@mui/material/CardActionArea";
 import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import { api } from "../lib/api";
 import type { Job } from "../lib/types";
-import { JobStatusChip } from "../components/JobStatusChip";
+import { VideoGrid } from "../components/VideoGrid";
 
 const RUNNING_STATUSES: Job["status"][] = ["processing", "finalizing", "awaiting_player_review"];
 const ATTENTION_STATUSES: Job["status"][] = ["error", "cancelled"];
@@ -39,10 +38,10 @@ interface HomePageProps {
   jobs: Job[];
   onSelectJob: (jobId: string) => void;
   onAddVideo: () => void;
-  onViewPlaylist: () => void;
+  onViewVideos: () => void;
 }
 
-export function HomePage({ jobs, onSelectJob, onAddVideo, onViewPlaylist }: HomePageProps) {
+export function HomePage({ jobs, onSelectJob, onAddVideo, onViewVideos }: HomePageProps) {
   const [asyncStats, setAsyncStats] = useState<AsyncStats>({ totalHits: 0, totalPlayers: 0 });
 
   const completed = jobs.filter((j) => j.status === "complete").length;
@@ -97,48 +96,10 @@ export function HomePage({ jobs, onSelectJob, onAddVideo, onViewPlaylist }: Home
         <Typography variant="h5" sx={{ fontWeight: 600 }}>
           Recent videos
         </Typography>
-        {jobs.length > 0 && <Button onClick={onViewPlaylist}>View all in Playlist</Button>}
+        {jobs.length > 0 && <Button onClick={onViewVideos}>View all in Videos</Button>}
       </Stack>
 
-      {recent.length === 0 ? (
-        <Typography color="text.secondary">No videos yet - add one to get started.</Typography>
-      ) : (
-        <Grid container spacing={2}>
-          {recent.map((job) => (
-            <Grid key={job.id} size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
-              <Card variant="outlined" sx={{ overflow: "hidden" }}>
-                <CardActionArea onClick={() => onSelectJob(job.id)}>
-                  <Box
-                    sx={{
-                      width: "100%",
-                      aspectRatio: "16 / 9",
-                      display: "flex",
-                      alignItems: "flex-end",
-                      backgroundColor: "action.hover",
-                      backgroundImage: `url(${api.thumbnailUrl(job.id)})`,
-                      backgroundSize: "cover",
-                      backgroundPosition: "center",
-                    }}
-                  >
-                    <Box
-                      sx={{
-                        width: "100%",
-                        p: 1.5,
-                        background: "linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0) 75%)",
-                      }}
-                    >
-                      <Typography noWrap sx={{ fontWeight: 600, color: "#fff" }}>
-                        {job.original_filename}
-                      </Typography>
-                      <JobStatusChip job={job} />
-                    </Box>
-                  </Box>
-                </CardActionArea>
-              </Card>
-            </Grid>
-          ))}
-        </Grid>
-      )}
+      <VideoGrid jobs={recent} onSelectJob={onSelectJob} />
     </Box>
   );
 }

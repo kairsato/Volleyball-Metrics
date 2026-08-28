@@ -7,7 +7,7 @@ import Typography from "@mui/material/Typography";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import PlaylistPlayIcon from "@mui/icons-material/PlaylistPlay";
 import type { Rally } from "../../lib/types";
-import type { FlatEvent } from "./types";
+import { formatTimestamp, type FlatEvent } from "./types";
 
 interface RalliesTabProps {
   rallies: Rally[];
@@ -54,7 +54,7 @@ function RallyCard({ rally, events, isCurrent, onSeek, onPlayAll }: RallyCardPro
           <Typography sx={{ fontWeight: 600 }}>
             Rally {rally.rally_index + 1}{" "}
             <Typography component="span" variant="body2" color="text.secondary">
-              {rally.duration_s.toFixed(1)}s
+              {formatTimestamp(rally.start_time_s)}-{formatTimestamp(rally.end_time_s)} · {rally.duration_s.toFixed(1)}s
             </Typography>
           </Typography>
           {isCurrent && <Chip size="small" color="primary" label="Playing" />}

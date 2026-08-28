@@ -22,10 +22,9 @@ import SettingsIcon from "@mui/icons-material/Settings";
 import { BrowserRouter, Link as RouterLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { CreditsPage } from "./pages/CreditsPage";
 import { HomePage } from "./pages/HomePage";
-import { PlaylistPage } from "./pages/PlaylistPage";
-import { ResultsPage } from "./pages/ResultsPage";
 import { StatsPage } from "./pages/StatsPage";
 import { VideoPage } from "./pages/VideoPage";
+import { VideosPage } from "./pages/VideosPage";
 import { UploadPanel } from "./components/UploadPanel";
 import { api } from "./lib/api";
 import { ThemeModeProvider, useThemeMode } from "./lib/themeMode";
@@ -67,23 +66,16 @@ function SettingsMenu() {
   );
 }
 
+const NAV_ITEMS = [
+  { label: "Home", to: "/home" },
+  { label: "Videos", to: "/videos" },
+  { label: "Stats", to: "/stats" },
+  { label: "Credits", to: "/credits" },
+];
+
 function TopNav() {
   const location = useLocation();
-  // The video for whatever job is currently in view (via ?job= on /results
-  // or /video itself) - when present, a "Video" tab is inserted so there's
-  // always a one-click jump to the big video view from the persistent nav,
-  // not just a button buried in the results page.
-  const jobId = new URLSearchParams(location.search).get("job");
-
-  const navItems = [
-    { label: "Home", to: "/home" },
-    { label: "Playlist", to: "/playlist" },
-    { label: "Stats", to: "/stats" },
-    ...(jobId ? [{ label: "Video", to: `/video?job=${jobId}` }] : []),
-    { label: "Credits", to: "/credits" },
-  ];
-
-  const activeTo = navItems.find((item) => item.to.split("?")[0] === location.pathname)?.to ?? false;
+  const activeTo = NAV_ITEMS.find((item) => item.to === location.pathname)?.to ?? false;
 
   return (
     <AppBar position="sticky" color="default" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
@@ -98,7 +90,7 @@ function TopNav() {
         </Typography>
 
         <Tabs value={activeTo} sx={{ flexGrow: 1, minHeight: 0 }}>
-          {navItems.map((item) => (
+          {NAV_ITEMS.map((item) => (
             <Tab key={item.to} label={item.label} value={item.to} component={RouterLink} to={item.to} sx={{ minHeight: 0 }} />
           ))}
         </Tabs>
@@ -111,6 +103,7 @@ function TopNav() {
 
 function AppContent() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -124,7 +117,7 @@ function AppContent() {
 
   // Keeps each video's status chip live everywhere even when its
   // JobWorkspace isn't mounted to poll it itself - e.g. right after
-  // "Start processing" navigates back to the playlist.
+  // "Start processing" navigates back to the videos list.
   useEffect(() => {
     const hasRunningJob = jobs.some((j) => j.status === "processing" || j.status === "finalizing");
     if (!hasRunningJob) return;
@@ -145,7 +138,7 @@ function AppContent() {
   function handleUploaded(job: Job) {
     handleJobUpdated(job);
     setUploadOpen(false);
-    navigate(`/results?job=${job.id}`);
+    navigate(`/video?job=${job.id}`);
   }
 
   function handleDeleteJob(jobId: string) {
@@ -153,7 +146,7 @@ function AppContent() {
   }
 
   function selectJob(jobId: string) {
-    navigate(`/results?job=${jobId}`);
+    navigate(`/video?job=${jobId}`);
   }
 
   return (
@@ -176,14 +169,14 @@ function AppContent() {
                 jobs={jobs}
                 onSelectJob={selectJob}
                 onAddVideo={() => setUploadOpen(true)}
-                onViewPlaylist={() => navigate("/playlist")}
+                onViewVideos={() => navigate("/videos")}
               />
             }
           />
           <Route
-            path="/playlist"
+            path="/videos"
             element={
-              <PlaylistPage
+              <VideosPage
                 jobs={jobs}
                 onSelectJob={selectJob}
                 onAddVideo={() => setUploadOpen(true)}
@@ -193,8 +186,10 @@ function AppContent() {
           />
           <Route path="/stats" element={<StatsPage jobs={jobs} />} />
           <Route path="/credits" element={<CreditsPage />} />
-          <Route path="/results" element={<ResultsPage onJobUpdated={handleJobUpdated} />} />
-          <Route path="/video" element={<VideoPage />} />
+          <Route path="/video" element={<VideoPage onJobUpdated={handleJobUpdated} />} />
+          {/* Old routes from before Playlist/Results were renamed to Videos - redirect rather than 404 in case anything still links here. */}
+          <Route path="/playlist" element={<Navigate to="/videos" replace />} />
+          <Route path="/results" element={<Navigate to={`/video${location.search}`} replace />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </Box>

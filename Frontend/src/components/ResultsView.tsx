@@ -22,14 +22,16 @@ import type { FlatEvent } from "./results/types";
 // a highlight reel rather than just... playing the whole video.
 const CLIP_DURATION_S = 3;
 
-// Both sticky panels below share this top offset - the tabs panel's
-// maxHeight is derived from it (100vh - offset - bottom breathing room) so
-// its independent scroll region never runs off the bottom of the viewport.
-// A flat "86vh" doesn't account for the offset itself, which is what was
-// making every tab look like it overflowed regardless of content length.
-const STICKY_TOP_PX = 88;
-const STICKY_BOTTOM_GUTTER_PX = 24;
-const STICKY_MAX_HEIGHT = `calc(100vh - ${STICKY_TOP_PX + STICKY_BOTTOM_GUTTER_PX}px)`;
+// The whole page is capped to exactly the viewport height minus the real
+// chrome around it (App.tsx's AppBar + the page wrapper's padding above and
+// below) and laid out as a column flexbox - the video/tabs row then gets
+// `flex: 1` and fills whatever's left after the (optional) warning banner,
+// so nothing has to guess that banner's height. This is what actually
+// guarantees no page-level scroll, rather than a hardcoded top offset that
+// only happened to match when nothing sat above the video.
+const APP_BAR_HEIGHT_PX = 64;
+const PAGE_PADDING_PX = 40; // matches AppContent's `p: 5` (5 * 8px) in App.tsx
+const PAGE_CONTENT_HEIGHT = `calc(100vh - ${APP_BAR_HEIGHT_PX + PAGE_PADDING_PX * 2}px)`;
 
 // Mirrors the tab into ?tab=<name> - readable/shareable alongside ?jobId=,
 // same native-URLSearchParams approach App.tsx uses for the job itself.
@@ -90,6 +92,15 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
   const [playlist, setPlaylist] = useState<number[] | null>(null);
   const [playlistIndex, setPlaylistIndex] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+
+  // The filename lives in the browser tab instead of an on-page heading -
+  // one less thing eating vertical space above the video.
+  useEffect(() => {
+    document.title = job.original_filename;
+    return () => {
+      document.title = "Volleyball Analytics";
+    };
+  }, [job.original_filename]);
 
   useEffect(() => {
     let cancelled = false;
@@ -187,15 +198,11 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
   if (!results) return <LoadingSpinner />;
 
   return (
-    <Box>
-      <Typography variant="h5" sx={{ fontWeight: 600, mb: 2 }}>
-        {job.original_filename}
-      </Typography>
-
+    <Box sx={{ height: PAGE_CONTENT_HEIGHT, display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {unnamedPlayerCount > 0 && (
         <Alert
           severity="warning"
-          sx={{ mb: 2 }}
+          sx={{ mb: 2, flexShrink: 0 }}
           action={
             <Button color="inherit" size="small" onClick={() => changeTab(TAB_NAMES.indexOf("setup"))}>
               Assign names
@@ -207,13 +214,12 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
         </Alert>
       )}
 
-      <Box sx={{ display: "flex", gap: 3, alignItems: "flex-start", flexWrap: "wrap" }}>
-        <Box sx={{ flex: "5 1 760px", minWidth: 520, position: "sticky", top: STICKY_TOP_PX }}>
+      <Box sx={{ flex: 1, minHeight: 0, display: "flex", gap: 3, overflow: "hidden" }}>
+        <Box sx={{ flex: "5 1 760px", minWidth: 520, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <Box
             sx={{
-              width: "100%",
-              aspectRatio: "16 / 9",
-              maxHeight: STICKY_MAX_HEIGHT,
+              flex: 1,
+              minHeight: 0,
               borderRadius: 2,
               border: 1,
               borderColor: "divider",
@@ -231,7 +237,7 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
             />
           </Box>
           {playlist !== null && (
-            <Stack direction="row" sx={{ mt: 1, alignItems: "center", justifyContent: "space-between" }}>
+            <Stack direction="row" sx={{ mt: 1, alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
               <Typography variant="body2" color="text.secondary">
                 Playing clip {playlistIndex + 1} of {playlist.length}
               </Typography>
@@ -242,17 +248,7 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
           )}
         </Box>
 
-        <Box
-          sx={{
-            flex: "2 1 380px",
-            minWidth: 340,
-            position: "sticky",
-            top: STICKY_TOP_PX,
-            maxHeight: STICKY_MAX_HEIGHT,
-            overflowY: "auto",
-            pr: 0.5,
-          }}
-        >
+        <Box sx={{ flex: "2 1 380px", minWidth: 340, minHeight: 0, overflowY: "auto", pr: 0.5 }}>
           <Tabs
             value={tab}
             onChange={(_, value) => changeTab(value)}

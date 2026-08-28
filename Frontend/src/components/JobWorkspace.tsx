@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import Accordion from "@mui/material/Accordion";
-import AccordionDetails from "@mui/material/AccordionDetails";
-import AccordionSummary from "@mui/material/AccordionSummary";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { api } from "../lib/api";
 import { PHASE_ONE_STAGES, PHASE_TWO_STAGES, phaseOneComplete } from "../lib/stages";
 import type { Job } from "../lib/types";
@@ -116,25 +112,6 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
         <Alert severity="error" sx={{ mb: 2 }}>
           {actionError}
         </Alert>
-      )}
-
-      {job.status !== "complete" && (
-        <Accordion variant="outlined" sx={{ maxWidth: 900, mb: 3 }}>
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Typography variant="body2">Preview uploaded video</Typography>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Box sx={{ width: "100%", maxWidth: 640, aspectRatio: "16 / 9", borderRadius: 2, overflow: "hidden", bgcolor: "#000" }}>
-              {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-              <Box
-                component="video"
-                controls
-                src={api.sourceVideoUrl(jobId)}
-                sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-              />
-            </Box>
-          </AccordionDetails>
-        </Accordion>
       )}
 
       {job.status === "uploaded" && (

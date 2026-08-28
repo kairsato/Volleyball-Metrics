@@ -1,62 +1,59 @@
-import Box from "@mui/material/Box";
-import IconButton from "@mui/material/IconButton";
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import { useEffect } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
-import { api } from "../lib/api";
+import { JobWorkspace } from "../components/JobWorkspace";
+import type { Job } from "../lib/types";
 
-// Matches the AppBar height (64px) plus the shared page padding (p: 5 = 40px
-// top and bottom) that App.tsx wraps every routed page in - without
-// accounting for that chrome, a height derived purely from "100vh" runs
-// past the actual visible area and forces the page to scroll.
-const CHROME_PX = 144;
+const SCROLLBAR_HIDDEN_CLASS = "vva-scrollbar-hidden";
 
-export function VideoPage() {
+// Hides (not disables) the page scrollbar while this page is mounted - the
+// video page's layout is sized to fit the viewport, but sub-pixel rounding
+// across browsers/zoom levels can still leave a stray pixel or two of real
+// overflow. That's not worth chasing further; a barely-there scrollbar
+// flickering in and out is worse than just not showing one here.
+function useHiddenScrollbar() {
+  useEffect(() => {
+    let styleEl = document.getElementById("vva-scrollbar-hidden-style") as HTMLStyleElement | null;
+    if (!styleEl) {
+      styleEl = document.createElement("style");
+      styleEl.id = "vva-scrollbar-hidden-style";
+      styleEl.textContent = `
+        .${SCROLLBAR_HIDDEN_CLASS} {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        .${SCROLLBAR_HIDDEN_CLASS}::-webkit-scrollbar {
+          display: none;
+        }
+      `;
+      document.head.appendChild(styleEl);
+    }
+
+    document.documentElement.classList.add(SCROLLBAR_HIDDEN_CLASS);
+    return () => {
+      document.documentElement.classList.remove(SCROLLBAR_HIDDEN_CLASS);
+    };
+  }, []);
+}
+
+interface VideoPageProps {
+  onJobUpdated: (job: Job) => void;
+}
+
+export function VideoPage({ onJobUpdated }: VideoPageProps) {
+  useHiddenScrollbar();
+
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const jobId = searchParams.get("job");
 
-  if (!jobId) return <Navigate to="/playlist" replace />;
+  if (!jobId) return <Navigate to="/videos" replace />;
 
   return (
-    <Box sx={{ display: "flex", justifyContent: "center" }}>
-      <Box sx={{ position: "relative" }}>
-        <IconButton
-          aria-label="Back to results"
-          onClick={() => navigate(`/results?job=${jobId}`)}
-          sx={{
-            position: "absolute",
-            top: 8,
-            left: 8,
-            zIndex: 1,
-            color: "#fff",
-            bgcolor: "rgba(0,0,0,0.5)",
-            "&:hover": { bgcolor: "rgba(0,0,0,0.7)" },
-          }}
-        >
-          <ArrowBackIcon />
-        </IconButton>
-
-        <Box
-          sx={{
-            height: `calc(100vh - ${CHROME_PX}px)`,
-            maxHeight: `calc(100vh - ${CHROME_PX}px)`,
-            width: "auto",
-            maxWidth: "100%",
-            aspectRatio: "16 / 9",
-            borderRadius: 2,
-            overflow: "hidden",
-            bgcolor: "#000",
-          }}
-        >
-          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          <Box
-            component="video"
-            controls
-            src={api.sourceVideoUrl(jobId)}
-            sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
-          />
-        </Box>
-      </Box>
-    </Box>
+    <JobWorkspace
+      key={jobId}
+      jobId={jobId}
+      onJobUpdated={onJobUpdated}
+      onBackToDashboard={() => navigate("/videos")}
+    />
   );
 }
