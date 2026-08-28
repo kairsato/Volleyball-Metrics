@@ -1,0 +1,45 @@
+# --- Python / Backend ---
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Per-job uploads and generated output (tracking data, stats, rendered
+# video, dashboards) - user data, not source, and can get large fast.
+Backend/API/data/
+
+# Pretrained/fine-tuned model weights - large binaries that belong in a
+# model registry or release asset, not git history. Some of these
+# (e.g. the VideoMAE checkpoint) are well over GitHub's 100MB file limit.
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.engine
+*.npz
+Backend/Analysis/GameStatusDetection/Models/
+
+# Ultralytics' default run/output directory (predictions, training runs) -
+# regenerable, not source.
+runs/
+
+# --- Node / Frontend ---
+node_modules/
+Frontend/dist/
+Frontend/build/
+*.local
+
+# --- Editors / OS ---
+.DS_Store
+Thumbs.db
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example

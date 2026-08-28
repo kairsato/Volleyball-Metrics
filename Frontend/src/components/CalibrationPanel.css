@@ -1,0 +1,133 @@
+/* Only the court-calibration canvas lives here - it's pixel-positioned
+   drag/drop/zoom mechanics that don't map onto MUI components. Everything
+   else in the app is styled through the MUI theme (see theme.ts) and sx
+   props on individual components. */
+
+.calibration-canvas {
+  position: relative;
+  display: inline-block;
+  /* Capped so the drag-overflow allowance (a fraction of this width - see
+     OVERFLOW_FRACTION in CalibrationPanel.tsx) stays a bounded number of
+     pixels regardless of viewport size - otherwise on a wide screen this
+     can grow large enough to spill into the sidebar. Margin is set inline
+     per-render from the actual computed overflow amount (see
+     CalibrationPanel.tsx) rather than guessed here, since a fixed guess
+     doesn't hold for every video's aspect ratio and display width. */
+  max-width: min(100%, 680px);
+  border-radius: 10px;
+  overflow: visible;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  user-select: none;
+  cursor: crosshair;
+}
+
+.calibration-canvas img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+}
+
+.calibration-overflow-bound {
+  position: absolute;
+  border: 1.5px dashed rgba(255, 255, 255, 0.55);
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.calibration-magnifier {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.2);
+  background-repeat: no-repeat;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.magnifier-cross-v {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 45, 45, 0.85);
+  transform: translateX(-50%);
+}
+
+.magnifier-cross-h {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(255, 45, 45, 0.85);
+  transform: translateY(-50%);
+}
+
+.calibration-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.court-outline {
+  fill: rgba(255, 235, 0, 0.08);
+  stroke: #ffd400;
+  stroke-width: 3;
+}
+
+.net-line {
+  stroke: #38bdf8;
+  stroke-width: 3;
+}
+
+.calibration-handle {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  margin-left: -13px;
+  margin-top: -13px;
+  border-radius: 50%;
+  background: color-mix(in srgb, #aa3bff 60%, transparent);
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: grab;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  transition: background-color 0.15s ease;
+}
+
+.calibration-handle.net {
+  background: color-mix(in srgb, #38bdf8 60%, transparent);
+}
+
+.calibration-handle:hover {
+  background: color-mix(in srgb, #aa3bff 85%, transparent);
+}
+
+.calibration-handle.net:hover {
+  background: color-mix(in srgb, #38bdf8 85%, transparent);
+}
+
+.calibration-handle.dragging {
+  cursor: grabbing;
+  background: #aa3bff;
+}
+
+.calibration-handle.net.dragging {
+  background: #38bdf8;
+}
