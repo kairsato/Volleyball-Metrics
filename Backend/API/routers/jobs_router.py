@@ -80,6 +80,7 @@ def _job_out(job: Job) -> JobOut:
         needs_player_id=needs_player_id,
         needs_scoring_review=needs_scoring_review,
         winner_team_name=winner_team_name,
+        queue_position=pipeline.queue_position(job.id),
     )
 
 
@@ -113,13 +114,18 @@ async def get_job(job_id: str):
 
 @router.post("/{job_id}/process", response_model=JobOut)
 async def process_job(job_id: str):
+    # Court calibration is no longer required up front - it's a post-
+    # processing Setup tab step like player identification and scoring, not
+    # a gate on starting the pipeline at all. Player/ball tracking still use
+    # court.json *while tracking runs* if it exists yet (see
+    # tracker_offline.py/ballDetection.py), but both fall back gracefully
+    # (pixel-space positions/speeds, full-frame ball search) when it
+    # doesn't - calibrating afterward just means redoing the job (see
+    # redo_job below) to get real-world court coordinates retroactively.
     job = _get_job_or_404(job_id)
 
     if job.status not in (STATUS_UPLOADED, STATUS_ERROR, STATUS_CANCELLED):
         raise HTTPException(status_code=409, detail=f"Job is already {job.status}")
-
-    if not (config.output_dir(job_id) / config.COURT_FILE_NAME).exists():
-        raise HTTPException(status_code=409, detail="Court calibration is required before processing")
 
     pipeline.start_phase_one(job_id)
     return _job_out(store.get(job_id))

@@ -24,7 +24,7 @@ import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import { api } from "../../lib/api";
 import type { Job, Player } from "../../lib/types";
 import { LoadingSpinner } from "../LoadingSpinner";
-import { LockOverlay } from "./LockOverlay";
+import { LockOverlay } from "../LockOverlay";
 import { RedoButton } from "./RedoButton";
 import { formatTimestamp } from "./types";
 

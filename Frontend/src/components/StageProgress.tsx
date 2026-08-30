@@ -1,3 +1,4 @@
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
@@ -9,6 +10,7 @@ import Stepper from "@mui/material/Stepper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import HourglassTopIcon from "@mui/icons-material/HourglassTop";
 import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 import { formatDuration, STAGE_LABELS, useElapsedSeconds } from "../lib/stages";
 
@@ -22,6 +24,11 @@ interface StageProgressProps {
   stageStartedAt: string;
   onCancel?: () => void;
   cancelling?: boolean;
+  // 1-based position in the pipeline queue while this job is still
+  // waiting for a worker (see pipeline.queue_position) - only ever set
+  // alongside an empty stepper (nothing's completed, nothing's active
+  // yet), so a queued job doesn't read as simply stuck.
+  queuePosition?: number | null;
 }
 
 export function StageProgress({
@@ -34,11 +41,17 @@ export function StageProgress({
   stageStartedAt,
   onCancel,
   cancelling,
+  queuePosition,
 }: StageProgressProps) {
   const elapsed = useElapsedSeconds(currentStage ? stageStartedAt : null);
   const doneCount = stages.filter((s) => completedStages.includes(s)).length;
   const firstIncomplete = stages.findIndex((s) => !completedStages.includes(s));
   const percent = Math.round((doneCount / stages.length) * 100);
+  // Sum of every completed stage's own duration, plus however long the
+  // currently-running one (if any) has been going - a running total for
+  // the whole phase, not just whichever single stage happens to be active
+  // right now.
+  const totalElapsed = stages.reduce((sum, s) => sum + (stageDurations[s] ?? 0), 0) + (currentStage ? elapsed : 0);
 
   return (
     <Box sx={{ display: "flex", justifyContent: "center", pt: 4 }}>
@@ -57,10 +70,22 @@ export function StageProgress({
           </Typography>
         )}
 
+        {queuePosition && (
+          <Alert severity="info" icon={<HourglassTopIcon fontSize="inherit" />} sx={{ mb: 2 }}>
+            Queued - position #{queuePosition} in line, waiting for another video to finish processing
+            first. This starts on its own once it's this video's turn.
+          </Alert>
+        )}
+
         <LinearProgress variant="determinate" value={percent} sx={{ mb: 1, height: 8, borderRadius: 999 }} />
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          {doneCount} of {stages.length} stages complete
-        </Typography>
+        <Stack direction="row" sx={{ justifyContent: "space-between", mb: 3 }}>
+          <Typography variant="body2" color="text.secondary">
+            {doneCount} of {stages.length} stages complete
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Total: {formatDuration(totalElapsed)}
+          </Typography>
+        </Stack>
 
         <Stepper activeStep={firstIncomplete === -1 ? stages.length : firstIncomplete} orientation="vertical">
           {stages.map((stage) => {

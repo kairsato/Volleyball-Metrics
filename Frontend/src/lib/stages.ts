@@ -1,17 +1,15 @@
 import { useEffect, useState } from "react";
 
-export const PHASE_ONE_STAGES = [
-  "court_calibration",
-  "player_tracking",
-  "ball_detection",
-  "game_status",
-  "action_detection",
-];
+// Court calibration used to run up front, before any of these, so it was
+// listed here as the first stage - it's now a post-processing Setup tab
+// step (see CourtCalibrationPage.tsx) that doesn't run as part of
+// processing at all, so it's no longer one of the stages this list is
+// tracking progress through.
+export const PHASE_ONE_STAGES = ["player_tracking", "ball_detection", "game_status", "action_detection"];
 
 export const PHASE_TWO_STAGES = ["consolidating", "dashboard", "rendering"];
 
 export const STAGE_LABELS: Record<string, string> = {
-  court_calibration: "Court calibration",
   player_tracking: "Player tracking",
   ball_detection: "Ball detection",
   game_status: "Game status detection",

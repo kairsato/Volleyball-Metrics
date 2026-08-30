@@ -9,9 +9,11 @@ from typing import Optional
 
 from . import config
 
-# Ordered so the frontend can render a progress list.
+# Ordered so the frontend can render a progress list. Court calibration
+# used to run up front and lead this list; it's now a post-processing
+# Setup tab step (see calibration_router.py) that doesn't run as part of
+# processing, so it's no longer one of these stages.
 PHASE_ONE_STAGES = [
-    "court_calibration",
     "player_tracking",
     "ball_detection",
     "game_status",
@@ -67,7 +69,6 @@ class JobStore:
     def __init__(self):
         self._lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
-        self.pipeline_lock = threading.Lock()
         self._load_existing()
 
     def _load_existing(self):

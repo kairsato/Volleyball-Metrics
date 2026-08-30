@@ -58,10 +58,9 @@ interface ActionFilterPreset {
 
 interface ResultsViewProps {
   job: Job;
-  onJobUpdated: (job: Job) => void;
 }
 
-export function ResultsView({ job, onJobUpdated }: ResultsViewProps) {
+export function ResultsView({ job }: ResultsViewProps) {
   const [results, setResults] = useState<ResultsOut | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState(() => readTabFromUrl());
@@ -287,7 +286,7 @@ export function ResultsView({ job, onJobUpdated }: ResultsViewProps) {
               presetFilter={actionFilterPreset}
             />
           )}
-          {tab === 3 && <SetupTab job={job} onJobUpdated={onJobUpdated} />}
+          {tab === 3 && <SetupTab job={job} />}
         </Box>
       </Box>
     </Box>

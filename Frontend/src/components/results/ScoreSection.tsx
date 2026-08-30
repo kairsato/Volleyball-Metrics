@@ -29,7 +29,7 @@ import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { api } from "../../lib/api";
 import type { Job, OcrRegion, Rally, ScoreConfig, ScoreMethod, ScoreResult, TeamEntry } from "../../lib/types";
-import { LockOverlay } from "./LockOverlay";
+import { LockOverlay } from "../LockOverlay";
 import { ScoreRegionPicker } from "./ScoreRegionPicker";
 import { ScoreTrackEditor, WIN_COLOR, LOSS_COLOR } from "./ScoreTrackEditor";
 import { formatTimestamp } from "./types";

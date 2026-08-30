@@ -6,7 +6,6 @@ import Typography from "@mui/material/Typography";
 import { api } from "../lib/api";
 import { PHASE_ONE_STAGES, PHASE_TWO_STAGES, phaseOneComplete } from "../lib/stages";
 import type { Job } from "../lib/types";
-import { CalibrationPanel } from "./CalibrationPanel";
 import { LoadingSpinner } from "./LoadingSpinner";
 import { ResultsView } from "./ResultsView";
 import { StageProgress } from "./StageProgress";
@@ -24,7 +23,6 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
   const [job, setJob] = useState<Job | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [calibrated, setCalibrated] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
   useEffect(() => {
@@ -115,16 +113,17 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
       )}
 
       {job.status === "uploaded" && (
-        <Box sx={{ maxWidth: 900 }}>
-          <Typography variant="h5" sx={{ fontWeight: 600, mb: 2 }}>
-            {job.original_filename}
+        <Box sx={{ maxWidth: 560 }}>
+          <Typography variant="h5" sx={{ fontWeight: 600, mb: 1 }}>
+            Ready to process
           </Typography>
-          <CalibrationPanel job={job} onCalibrated={() => setCalibrated(true)} />
-          {calibrated && (
-            <Button variant="contained" sx={{ mt: 3 }} onClick={handleStartProcessing}>
-              Start processing
-            </Button>
-          )}
+          <Typography color="text.secondary" sx={{ mb: 2 }}>
+            Court calibration, player identification, and scoring are all handled afterward from
+            the Setup tab - there's nothing to configure before this runs.
+          </Typography>
+          <Button variant="contained" onClick={handleStartProcessing}>
+            Start processing
+          </Button>
         </Box>
       )}
 
@@ -139,6 +138,7 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
           stageStartedAt={job.updated_at}
           onCancel={handleCancel}
           cancelling={cancelling}
+          queuePosition={job.queue_position}
         />
       )}
 
@@ -153,10 +153,11 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
           stageStartedAt={job.updated_at}
           onCancel={handleCancel}
           cancelling={cancelling}
+          queuePosition={job.queue_position}
         />
       )}
 
-      {job.status === "complete" && <ResultsView job={job} onJobUpdated={applyUpdate} />}
+      {job.status === "complete" && <ResultsView job={job} />}
 
       {job.status === "error" && (
         <Box sx={{ maxWidth: 560 }}>

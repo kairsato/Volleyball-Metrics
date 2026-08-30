@@ -90,11 +90,32 @@ export const api = {
     return request<CalibrationPointsOut>(`/api/jobs/${jobId}/calibration`);
   },
 
-  setCalibrationPoints(jobId: string, corners: Point[], netPoints: Point[]): Promise<CalibrationPointsOut> {
+  setCalibrationPoints(
+    jobId: string,
+    middleLeft: Point,
+    middleRight: Point,
+    farLeft: Point,
+    farRight: Point,
+    netHeightM: number,
+  ): Promise<CalibrationPointsOut> {
     return request<CalibrationPointsOut>(`/api/jobs/${jobId}/calibration`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ corners, net_points: netPoints }),
+      body: JSON.stringify({
+        middle_left: middleLeft,
+        middle_right: middleRight,
+        far_left: farLeft,
+        far_right: farRight,
+        net_height_m: netHeightM,
+      }),
+    });
+  },
+
+  setCalibrationConfirmed(jobId: string, confirmed: boolean): Promise<CalibrationPointsOut> {
+    return request<CalibrationPointsOut>(`/api/jobs/${jobId}/calibration/confirm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed }),
     });
   },
 

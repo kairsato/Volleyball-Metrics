@@ -441,6 +441,73 @@ def render():
 # CREATE HOMOGRAPHY
 # ============================================================
 
+# ============================================================
+# HALF-COURT CALIBRATION (4 points: net line + far baseline)
+# ============================================================
+#
+# The web app only asks for 4 points - both ends of the net line and both
+# ends of the far baseline - rather than the desktop tool's full 6-point set
+# above (4 corners + 2 net-top). Those 4 points alone are enough to solve a
+# full pixel<->court homography (cv2.getPerspectiveTransform needs exactly
+# 4 correspondences), and once solved, every other line on the court - the
+# near baseline and both attack lines - has a *known* real-world position
+# (see the layout below), so where it lands in the image is a matter of
+# projecting through the *inverse* of that same homography, not something
+# the user has to mark by hand. Verified against a synthetic ground-truth
+# perspective transform to sub-pixel accuracy.
+#
+#   x=0 (near)   x=6 (near attack)   x=9 (net/middle)   x=12 (far attack)   x=18 (far)
+#        |------------------|--------------|------------------|------------------|
+#      y=0 (left sideline)                                                  y=0
+#      y=9 (right sideline)                                                 y=9
+
+# Standard distance from the net to each attack (3m) line.
+ATTACK_LINE_OFFSET_M = 3.0
+
+HALF_COURT_DESTINATION = np.array([
+    [COURT_LENGTH / 2, 0.0],           # middle_left  (net, left sideline)
+    [COURT_LENGTH / 2, COURT_WIDTH],   # middle_right (net, right sideline)
+    [COURT_LENGTH, 0.0],               # far_left
+    [COURT_LENGTH, COURT_WIDTH],       # far_right
+], dtype=np.float32)
+
+
+def create_half_court_homography(middle_left, middle_right, far_left, far_right):
+    """Solves the pixel -> court-metres homography from just the net line
+    and far baseline - see the module diagram above. Argument order matters:
+    it has to line up with HALF_COURT_DESTINATION."""
+    source_points = np.array(
+        [middle_left, middle_right, far_left, far_right], dtype=np.float32
+    )
+    return cv2.getPerspectiveTransform(source_points, HALF_COURT_DESTINATION)
+
+
+def predict_court_geometry(matrix):
+    """Everything else on the court, derived purely from the homography
+    above and the court's known real dimensions - never marked by the user.
+    Returns pixel coordinates (as (x, y) tuples) for the near baseline's two
+    corners and both attack lines' sideline-to-sideline endpoints."""
+    inverse = np.linalg.inv(matrix)
+
+    def to_pixel(court_x, court_y):
+        point = np.array([[[court_x, court_y]]], dtype=np.float32)
+        transformed = cv2.perspectiveTransform(point, inverse)
+        return float(transformed[0][0][0]), float(transformed[0][0][1])
+
+    near_x = 0.0
+    far_attack_x = COURT_LENGTH / 2 + ATTACK_LINE_OFFSET_M
+    near_attack_x = COURT_LENGTH / 2 - ATTACK_LINE_OFFSET_M
+
+    return {
+        "near_left": to_pixel(near_x, 0.0),
+        "near_right": to_pixel(near_x, COURT_WIDTH),
+        "attack_far_left": to_pixel(far_attack_x, 0.0),
+        "attack_far_right": to_pixel(far_attack_x, COURT_WIDTH),
+        "attack_near_left": to_pixel(near_attack_x, 0.0),
+        "attack_near_right": to_pixel(near_attack_x, COURT_WIDTH),
+    }
+
+
 def create_homography(image_points):
 
     # IMPORTANT:

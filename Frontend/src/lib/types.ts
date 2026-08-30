@@ -26,6 +26,10 @@ export interface Job {
   needs_player_id: boolean;
   needs_scoring_review: boolean;
   winner_team_name: string | null;
+  // 1-based position in the pipeline queue while still waiting for a
+  // worker to pick this job up - null once it's actually running, done,
+  // or was never queued at all.
+  queue_position: number | null;
 }
 
 export interface Player {
@@ -81,11 +85,29 @@ export interface Point {
   y: number;
 }
 
+// The near baseline corners + both attack lines, derived from the 4
+// points below (see Backend's court.predict_court_geometry) - only
+// present once calibrated, and purely a preview for drawing: never sent
+// back when saving.
+export interface PredictedCourtGeometry {
+  near_left: Point;
+  near_right: Point;
+  attack_far_left: Point;
+  attack_far_right: Point;
+  attack_near_left: Point;
+  attack_near_right: Point;
+}
+
 export interface CalibrationPointsOut {
   job_id: string;
-  corners: Point[];
-  net_points: Point[];
+  middle_left: Point;
+  middle_right: Point;
+  far_left: Point;
+  far_right: Point;
+  net_height_m: number;
   calibrated: boolean;
+  confirmed: boolean;
+  predicted: PredictedCourtGeometry | null;
 }
 
 export interface Rally {
@@ -194,6 +216,11 @@ export interface RallyWinner {
   game_index: number;
   winner: "x" | "y" | null;
   confidence: "auto" | "manual" | "uncertain";
+  // The raw digits the Computer Vision method actually read for this
+  // rally, if any - a reference only, never required for winner/
+  // confidence above. Always null for manual/automatic-method rallies.
+  cv_left: number | null;
+  cv_right: number | null;
 }
 
 export interface ScoreResult {

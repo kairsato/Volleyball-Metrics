@@ -25,6 +25,11 @@ class JobOut(BaseModel):
     needs_player_id: bool = False
     needs_scoring_review: bool = False
     winner_team_name: Optional[str] = None
+    # 1-based position in the pipeline queue while this job is still
+    # waiting for a worker to actually pick it up (see
+    # pipeline.queue_position) - None once it's running, done, or never
+    # queued at all.
+    queue_position: Optional[int] = None
 
 
 class PlayerOut(BaseModel):
@@ -105,14 +110,35 @@ class Point(BaseModel):
 
 class CalibrationPointsOut(BaseModel):
     job_id: str
-    corners: list[Point]
-    net_points: list[Point]
+    middle_left: Point
+    middle_right: Point
+    far_left: Point
+    far_right: Point
+    net_height_m: float
     calibrated: bool
+    # Whether the saved calibration is locked - distinct from `calibrated`
+    # (which just means points exist): "Redo Court Identification" flips
+    # this to False without clearing the points, same confirmed/locked/redo
+    # pattern as scoring and player identification (see
+    # ScoreConfigOut.confirmed / PlayersListOut.confirmed).
+    confirmed: bool = False
+    # The near baseline's two corners and both attack lines, derived from
+    # the 4 points above (see court.predict_court_geometry) - only present
+    # once calibrated, and purely a preview: never something sent back in
+    # CalibrationIn.
+    predicted: Optional[dict[str, Point]] = None
+
+
+class CalibrationConfirmIn(BaseModel):
+    confirmed: bool
 
 
 class CalibrationIn(BaseModel):
-    corners: list[Point]
-    net_points: list[Point]
+    middle_left: Point
+    middle_right: Point
+    far_left: Point
+    far_right: Point
+    net_height_m: float
 
 
 class PlayerEvent(BaseModel):
@@ -226,6 +252,12 @@ class RallyWinnerOut(BaseModel):
     game_index: int
     winner: Optional[str] = None
     confidence: str = "manual"
+    # The raw digits the Computer Vision method actually read for this
+    # rally, if any - saved as a reference only (see score_cv.py's module
+    # docstring); winner/confidence above never depend on these being
+    # present. Always None for manual/automatic-method rallies.
+    cv_left: Optional[int] = None
+    cv_right: Optional[int] = None
 
 
 class RallyWinnerIn(BaseModel):

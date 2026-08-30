@@ -1,11 +1,24 @@
 """Computer-vision score reading: crops the user-marked scoreboard region
-near the end of every rally, reads the two digits there, and diffs
-consecutive readings to work out who won each rally and where each
-game/set boundary sits (a reset back down to a low score after a nonzero
-one). This is the one method of the four in score.py that doesn't reuse
-teams.py's ball-out-of-bounds heuristic - everything downstream of the raw
-readings (game grouping, then mapping a side to a named team) reuses
-score.py's existing machinery.
+near the end of every rally and works out who won each rally and where
+each game/set boundary sits, purely from *when a side's digit changes* -
+not from needing a clean, simultaneous read of both digits together. This
+is the one method of the four in score.py that doesn't reuse teams.py's
+ball-out-of-bounds heuristic - everything downstream (game grouping, then
+mapping a side to a named team) reuses score.py's existing machinery.
+
+The left and right digits are tracked independently precisely because they
+usually *can't* both be read together reliably: a hand, a glare, a referee
+walking past, or just motion blur regularly obscures one side while the
+other stays legible. Requiring both at once (the original approach) threw
+away every one of those partial reads; tracking each side's own last-known
+value means a single-side read is still useful - if it differs from what
+that side last showed, that side just won the point, full stop, whether or
+not we also caught the other side's digit in the same instant. Whatever
+raw digits *do* get read are still saved on each rally as a reference
+(RallyWinnerOut.cv_left/cv_right) even though the winner-determination
+logic above no longer strictly depends on having both - useful for a human
+spot-checking a stretch of uncertain rallies, without pretending the exact
+number itself must be known.
 
 The reading engine is easyocr, a general-purpose text reader - not a
 digit-specific model. Two pretrained digit-detection models were tried
@@ -17,21 +30,13 @@ all, once given real preprocessing - see _preprocess below - since "read
 printed digits in a photo" is what it's actually built for, unlike either
 specialized model's training domain.
 
-Even with that preprocessing, correctly reading BOTH digits only succeeds
-on roughly 40% of rallies in informal testing against one real match (a
-physical flip-tile scorer, moderate video compression, a small ~200x80px
-marked region) - the rest correctly come back as no reading at all rather
-than a wrong one (see _read_score's exact-two-clean-digits requirement),
-which is the safer failure mode: they're just flagged "uncertain" for
-manual review rather than silently corrupting the rally-to-rally score
-diff below. Every reading here, correct or not, is always a starting
-point - reviewable and correctable through the Setup tab's track editor,
-never treated as final.
-
 The score region is a single fixed box for the whole video (typical
 broadcast/fixed-camera overlays, and this project's own physical
-flip-tile scorer, don't move), read as two numbers ordered left-to-right
-within it. Which physical side of the *frame* that corresponds to is
+flip-tile scorer, don't move). Each detected digit run is assigned to the
+left or right side by its own horizontal position within the region, not
+by "leftmost of however many were found" - that's what lets a single
+legible digit still count even when the other side wasn't read at all.
+Which physical side of the *frame* the left half corresponds to is
 assumed to line up with the calibrated court's near/far net-crossing
 split (side A = left, side B = right) - the same "sideline view"
 assumption CourtSummary/teams.py already documents for the geometric
@@ -58,7 +63,7 @@ from . import score
 # for OCR to land on a clean, unobstructed read (a transient overlay,
 # motion blur, or a referee's hand can spoil any single frame) without
 # scaling with the video's actual frame rate.
-SAMPLE_COUNT = 10
+SAMPLE_COUNT = 5
 SAMPLE_WINDOW_S = 1.2
 
 
@@ -114,10 +119,16 @@ def _preprocess(crop_bgr: np.ndarray) -> np.ndarray:
     return clahe.apply(gray)
 
 
-def _ocr_crop(image: Optional[np.ndarray]) -> Optional[tuple[int, int]]:
-    """Reads the two digit groups from an already-cropped scoreboard image,
-    ordered left-to-right by their detected position. None unless exactly
-    two clean digit-only detections were found.
+def _ocr_crop(image: Optional[np.ndarray]) -> tuple[Optional[int], Optional[int]]:
+    """Reads the left- and right-side digit groups from an already-cropped
+    scoreboard image, independently - each is None if that side's digits
+    weren't legible in this particular sample, rather than the whole
+    reading being discarded just because the *other* side wasn't. Side is
+    decided by each detection's horizontal center within the crop (left
+    half vs right half), not by "leftmost of however many were found" -
+    that's what lets a single legible digit still count even when the
+    other side wasn't read at all (a hand, a glare, a referee walking past
+    one half of the board).
 
     Only detections that are ALREADY a clean run of digits (no internal
     whitespace or other characters) count - a detected block containing a
@@ -131,26 +142,32 @@ def _ocr_crop(image: Optional[np.ndarray]) -> Optional[tuple[int, int]]:
     decodes every frame it needs up front and only calls this (the actual
     model-inference step) afterward, over all of them in one pass."""
     if image is None:
-        return None
+        return None, None
 
-    detections = _get_reader().readtext(_preprocess(image))
+    preprocessed = _preprocess(image)
+    detections = _get_reader().readtext(preprocessed)
+    mid_x = preprocessed.shape[1] / 2
 
-    numbers = []
+    left_candidates: list[tuple[float, int]] = []
+    right_candidates: list[tuple[float, int]] = []
     for bbox, text, _confidence in detections:
         if not re.fullmatch(r"\d+", text):
             continue
-        left_x = min(p[0] for p in bbox)
-        numbers.append((left_x, int(text)))
+        center_x = sum(p[0] for p in bbox) / len(bbox)
+        value = int(text)
+        (left_candidates if center_x < mid_x else right_candidates).append((center_x, value))
 
-    if len(numbers) != 2:
-        return None
+    # If a side somehow has more than one digit-run detected (stray noise -
+    # a jersey number, a clock, a scoreboard label), keep the one closest
+    # to that side's own edge of the region, since a genuine score digit
+    # sits at the outer edge of its half, not near the middle.
+    left = min(left_candidates, key=lambda c: c[0])[1] if left_candidates else None
+    right = max(right_candidates, key=lambda c: c[0])[1] if right_candidates else None
+    return left, right
 
-    numbers.sort(key=lambda n: n[0])
-    return numbers[0][1], numbers[1][1]
 
-
-def _modal_reading(readings: list[Optional[tuple[int, int]]]) -> Optional[tuple[int, int]]:
-    valid = [r for r in readings if r is not None]
+def _modal_side(values: list[Optional[int]]) -> Optional[int]:
+    valid = [v for v in values if v is not None]
     if not valid:
         return None
     return Counter(valid).most_common(1)[0][0]
@@ -250,46 +267,66 @@ def compute_cv(output_path: Path, video_path: Optional[Path], rally_range: Optio
     finally:
         cap.release()
 
-    readings: dict[int, Optional[tuple[int, int]]] = {}
+    # Per rally: the modal left reading and modal right reading, aggregated
+    # *independently* across this rally's samples - not the modal (left,
+    # right) *pair*. A sample that only caught one side still contributes
+    # to that side's own modal value, instead of the whole sample being
+    # thrown out for not having both.
+    readings: dict[int, tuple[Optional[int], Optional[int]]] = {}
     for rally in target_rallies:
         start, end = crop_indexes[rally["rally_index"]]
         samples = [_ocr_crop(crop) for crop in crops[start:end]]
-        readings[rally["rally_index"]] = _modal_reading(samples)
+        left_val = _modal_side([s[0] for s in samples])
+        right_val = _modal_side([s[1] for s in samples])
+        readings[rally["rally_index"]] = (left_val, right_val)
 
     split_after: set[int] = set()
     winners: dict[int, Optional[str]] = {}
     uncertain: set[int] = set()
 
-    baseline = seed_baseline
-    previous_reading = seed_baseline
+    # last_left/last_right are each side's own last-known digit, tracked
+    # independently - a side's winner-worthy "change" only needs *that
+    # side's* new reading to differ from what it last showed, regardless
+    # of whether the other side was legible in the same rally at all. The
+    # exact number/size of the jump is never used to decide *who* won,
+    # only *that* one side moved and the other (as far as we can tell)
+    # didn't - the raw values are still saved per rally as a reference
+    # (see cv_left/cv_right below), just not relied on for this.
+    last_left, last_right = seed_baseline
     for rally in target_rallies:
-        reading = readings[rally["rally_index"]]
-        if reading is None:
-            winners[rally["rally_index"]] = None
-            uncertain.add(rally["rally_index"])
-            continue
+        left_val, right_val = readings[rally["rally_index"]]
 
-        if (reading[0] + reading[1]) < (previous_reading[0] + previous_reading[1]):
-            # Score went down instead of up - a new game started somewhere
-            # before this rally; treat the previous rally as the game's end.
+        # A side's reading dropping below what it last showed means a new
+        # game started somewhere before this rally - the physical/digital
+        # scoreboard doesn't go backwards otherwise.
+        reset = (left_val is not None and left_val < last_left) or (
+            right_val is not None and right_val < last_right
+        )
+        if reset:
             prev_index = rally["rally_index"] - 1
             if prev_index >= 0:
                 split_after.add(prev_index)
-            baseline = (0, 0)
+            last_left, last_right = 0, 0
 
-        delta_left = reading[0] - baseline[0]
-        delta_right = reading[1] - baseline[1]
+        left_changed = left_val is not None and left_val != last_left
+        right_changed = right_val is not None and right_val != last_right
 
-        if delta_left == 1 and delta_right == 0:
+        if left_changed and not right_changed:
             winners[rally["rally_index"]] = left_side
-        elif delta_right == 1 and delta_left == 0:
+        elif right_changed and not left_changed:
             winners[rally["rally_index"]] = right_side
         else:
+            # Neither side changed, both appeared to (only one side can
+            # genuinely score a rally, so that's more likely a misread
+            # than a real double-change), or nothing was legible at all -
+            # none of those can be confidently attributed to either side.
             winners[rally["rally_index"]] = None
             uncertain.add(rally["rally_index"])
 
-        baseline = reading
-        previous_reading = reading
+        if left_val is not None:
+            last_left = left_val
+        if right_val is not None:
+            last_right = right_val
 
     if rally_range is None:
         merged_split_after = split_after
@@ -326,11 +363,18 @@ def compute_cv(output_path: Path, video_path: Optional[Path], rally_range: Optio
         game_attribution = attribution.get(game_index, {})
         winner = game_attribution.get(ab_winner) if ab_winner else None
         confidence = "uncertain" if (rally_index in uncertain or winner is None) else "auto"
+        cv_left, cv_right = readings.get(rally_index, (None, None))
         result_rallies.append({
             "rally_index": rally_index,
             "game_index": game_index,
             "winner": winner,
             "confidence": confidence,
+            # The raw digits actually read for this rally, saved purely as
+            # a reference for a human spot-checking an uncertain stretch -
+            # the winner above never depends on these being complete or
+            # even present (see the change-detection loop).
+            "cv_left": cv_left,
+            "cv_right": cv_right,
         })
 
     return score.save_result(output_path, {"games": games, "rallies": result_rallies})

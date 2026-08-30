@@ -1,9 +1,11 @@
+import queue
 import subprocess
 import sys
 import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Callable, Optional
 
 from . import config, players
 from .jobs import (
@@ -21,6 +23,70 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 _processes_lock = threading.Lock()
 _active_processes: dict[str, subprocess.Popen] = {}
 _cancelled_jobs: set[str] = set()
+
+# Only MAX_CONCURRENT_PIPELINE_RUNS heavy pipeline runs (GPU/CPU bound) ever
+# actually execute at once, but a "Start processing"/redo click beyond that
+# no longer just fails outright with "Another job is already processing" -
+# it's queued instead, picked up by whichever of the fixed worker pool
+# below frees up first. A job waiting its turn sits at status
+# "processing"/"finalizing" with stage=None (the same "Starting..." state
+# the UI already shows for the brief real gap before the first stage
+# begins), and starts for real the moment a worker reaches it - including
+# picking up a cancel requested while it was still waiting, since
+# _run_stage's very first check is _cancelled_jobs.
+_pipeline_queue: "queue.Queue[tuple[str, str, Callable[[], None]]]" = queue.Queue()
+_worker_lock = threading.Lock()
+_worker_started = False
+
+# Mirrors which job_ids are sitting in _pipeline_queue, in order - a plain
+# queue.Queue doesn't support peeking at its contents, and the UI needs to
+# say *something* more useful than "Starting..." for a job that's actually
+# waiting behind others, not just in the brief real gap before its first
+# stage begins (see queue_position below, surfaced as JobOut.queue_position).
+_queue_state_lock = threading.Lock()
+_queued_job_ids: list[str] = []
+
+
+def queue_position(job_id: str) -> Optional[int]:
+    """1-based position in the pipeline queue if job_id is still waiting for
+    a worker to pick it up, None once it's actually running (or if it was
+    never queued at all)."""
+    with _queue_state_lock:
+        if job_id not in _queued_job_ids:
+            return None
+        return _queued_job_ids.index(job_id) + 1
+
+
+def _worker_loop():
+    while True:
+        job_id, target_status_on_success, work = _pipeline_queue.get()
+        with _queue_state_lock:
+            if job_id in _queued_job_ids:
+                _queued_job_ids.remove(job_id)
+        try:
+            work()
+            store.update(job_id, status=target_status_on_success, stage=None, error=None)
+        except JobCancelled:
+            store.update(job_id, status=STATUS_CANCELLED, stage=None, error=None)
+        except Exception as exc:  # noqa: BLE001 - surfaced on the job, not swallowed
+            traceback.print_exc()
+            store.update(job_id, status=STATUS_ERROR, error=str(exc))
+        finally:
+            _cancelled_jobs.discard(job_id)
+            _pipeline_queue.task_done()
+
+
+def _enqueue(job_id: str, target_status_on_success: str, work: Callable[[], None]):
+    global _worker_started
+    with _worker_lock:
+        if not _worker_started:
+            _worker_started = True
+            for _ in range(config.MAX_CONCURRENT_PIPELINE_RUNS):
+                threading.Thread(target=_worker_loop, daemon=True).start()
+
+    with _queue_state_lock:
+        _queued_job_ids.append(job_id)
+    _pipeline_queue.put((job_id, target_status_on_success, work))
 
 
 class JobCancelled(Exception):
@@ -105,24 +171,6 @@ def _phase_two(job_id: str, video_path: Path, output_path: Path):
     _run_stage(job_id, "rendering", video_path, output_path)
 
 
-def _run_locked(job_id: str, target_status_on_success: str, work):
-    if not store.pipeline_lock.acquire(blocking=False):
-        store.update(job_id, status=STATUS_ERROR, error="Another job is already processing.")
-        return
-
-    try:
-        work()
-        store.update(job_id, status=target_status_on_success, stage=None, error=None)
-    except JobCancelled:
-        store.update(job_id, status=STATUS_CANCELLED, stage=None, error=None)
-    except Exception as exc:
-        traceback.print_exc()
-        store.update(job_id, status=STATUS_ERROR, error=str(exc))
-    finally:
-        _cancelled_jobs.discard(job_id)
-        store.pipeline_lock.release()
-
-
 def start_phase_one(job_id: str):
     video_path = config.find_input_video(job_id)
     if video_path is None:
@@ -143,12 +191,7 @@ def start_phase_one(job_id: str):
         store.update(job_id, status=STATUS_FINALIZING, stage=None)
         _phase_two(job_id, video_path, output_path)
 
-    thread = threading.Thread(
-        target=_run_locked,
-        args=(job_id, STATUS_COMPLETE, work),
-        daemon=True,
-    )
-    thread.start()
+    _enqueue(job_id, STATUS_COMPLETE, work)
 
 
 def start_phase_two(job_id: str):
@@ -160,9 +203,4 @@ def start_phase_two(job_id: str):
     output_path = config.output_dir(job_id)
     store.update(job_id, status=STATUS_FINALIZING, error=None)
 
-    thread = threading.Thread(
-        target=_run_locked,
-        args=(job_id, STATUS_COMPLETE, lambda: _phase_two(job_id, video_path, output_path)),
-        daemon=True,
-    )
-    thread.start()
+    _enqueue(job_id, STATUS_COMPLETE, lambda: _phase_two(job_id, video_path, output_path))

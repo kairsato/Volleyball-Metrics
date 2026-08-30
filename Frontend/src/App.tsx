@@ -29,6 +29,7 @@ import {
   useNavigate,
   useSearchParams,
 } from "react-router-dom";
+import { CourtCalibrationPage } from "./pages/CourtCalibrationPage";
 import { CreditsPage } from "./pages/CreditsPage";
 import { HomePage } from "./pages/HomePage";
 import { PlayerIdentificationPage } from "./pages/PlayerIdentificationPage";
@@ -221,6 +222,7 @@ function AppContent() {
           <Route path="/credits" element={<CreditsPage />} />
           <Route path="/video" element={<VideoPage onJobUpdated={handleJobUpdated} />} />
           <Route path="/video/setup" element={<LegacySetupRedirect />} />
+          <Route path="/video/setup/court-calibration" element={<CourtCalibrationPage />} />
           <Route
             path="/video/setup/player-identification"
             element={<PlayerIdentificationPage onJobUpdated={handleJobUpdated} />}

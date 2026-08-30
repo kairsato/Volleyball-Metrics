@@ -144,6 +144,11 @@ def set_game_boundary(output_path: Path, rally_index: int, split: bool) -> dict:
     winners_by_rally = {r["rally_index"]: r for r in result["rallies"]}
     new_rallies = [
         {
+            # Carries forward anything else already on the record (e.g.
+            # score_cv.py's cv_left/cv_right reference digits) - only
+            # game_index/winner/confidence actually need to change when a
+            # boundary moves.
+            **winners_by_rally.get(r["rally_index"], {}),
             "rally_index": r["rally_index"],
             "game_index": game_by_rally[r["rally_index"]],
             "winner": winners_by_rally.get(r["rally_index"], {}).get("winner"),

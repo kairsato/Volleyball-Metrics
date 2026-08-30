@@ -5,15 +5,18 @@
 
 .calibration-canvas {
   position: relative;
-  display: inline-block;
-  /* Capped so the drag-overflow allowance (a fraction of this width - see
-     OVERFLOW_FRACTION in CalibrationPanel.tsx) stays a bounded number of
-     pixels regardless of viewport size - otherwise on a wide screen this
-     can grow large enough to spill into the sidebar. Margin is set inline
-     per-render from the actual computed overflow amount (see
-     CalibrationPanel.tsx) rather than guessed here, since a fixed guess
-     doesn't hold for every video's aspect ratio and display width. */
-  max-width: min(100%, 680px);
+  display: block;
+  /* Fixed at 16:9 - source recordings are always this ratio - and flexes to
+     fill the largest box that still fits within the space the layout gives
+     it (see CalibrationPanel.tsx) in BOTH directions: width and height.
+     Leaving width/height as auto (rather than e.g. width:100%) is what
+     lets the browser shrink whichever axis is the tighter fit instead of
+     only ever responding to width. */
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 16 / 9;
   border-radius: 10px;
   overflow: visible;
   border: 1px solid rgba(127, 127, 127, 0.3);
@@ -23,8 +26,8 @@
 
 .calibration-canvas img {
   display: block;
-  max-width: 100%;
-  height: auto;
+  width: 100%;
+  height: 100%;
   border-radius: 10px;
 }
 
@@ -40,8 +43,11 @@
   position: absolute;
   top: 10px;
   left: 10px;
-  width: 150px;
-  height: 150px;
+  /* Kept in sync with MAGNIFIER_SIZE in CalibrationPanel.tsx - both need
+     the same number since the background-position math there assumes this
+     exact box size. */
+  width: 195px;
+  height: 195px;
   border-radius: 50%;
   border: 3px solid #fff;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.2);
@@ -73,10 +79,14 @@
 
 .calibration-overlay {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
+  /* left/top/width/height are set inline from CalibrationPanel.tsx, sized
+     to match .calibration-overflow-bound (the allowed drag range) rather
+     than the image itself - a predicted line landing anywhere in that
+     range should stay visible instead of getting clipped at the image's
+     own edge. overflow:hidden here is only a safety net for anything that
+     lands outside even that generous an area. */
+  overflow: hidden;
+  border-radius: 10px;
   pointer-events: none;
 }
 
@@ -91,6 +101,17 @@
   stroke-width: 3;
 }
 
+/* The near baseline + both attack lines - never marked directly, always
+   derived from the 4 marked points (see courtGeometry.ts) - drawn dashed
+   and dimmer than the marked lines above so it reads as "predicted", not
+   "placed". */
+.predicted-outline {
+  fill: none;
+  stroke: rgba(0, 235, 160, 0.85);
+  stroke-width: 2.5;
+  stroke-dasharray: 10 8;
+}
+
 .calibration-handle {
   position: absolute;
   width: 26px;
@@ -98,36 +119,38 @@
   margin-left: -13px;
   margin-top: -13px;
   border-radius: 50%;
-  background: color-mix(in srgb, #aa3bff 60%, transparent);
-  color: #fff;
-  border: 2px solid rgba(255, 255, 255, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
+  background: transparent;
+  border: 3px solid #aa3bff;
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.85),
+    0 2px 6px rgba(0, 0, 0, 0.45);
   cursor: grab;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
-  transition: background-color 0.15s ease;
-}
-
-.calibration-handle.net {
-  background: color-mix(in srgb, #38bdf8 60%, transparent);
+  transition: border-color 0.15s ease;
 }
 
 .calibration-handle:hover {
-  background: color-mix(in srgb, #aa3bff 85%, transparent);
-}
-
-.calibration-handle.net:hover {
-  background: color-mix(in srgb, #38bdf8 85%, transparent);
+  border-color: #c46bff;
 }
 
 .calibration-handle.dragging {
   cursor: grabbing;
-  background: #aa3bff;
+  border-color: #fff;
 }
 
-.calibration-handle.net.dragging {
-  background: #38bdf8;
+/* Always-visible short title next to each handle, not just its number -
+   the whole point is that it should be obvious which court landmark each
+   one is without having to hover/guess. */
+.calibration-handle-label {
+  position: absolute;
+  top: 50%;
+  left: 32px;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  background: rgba(20, 20, 20, 0.75);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  pointer-events: none;
 }
