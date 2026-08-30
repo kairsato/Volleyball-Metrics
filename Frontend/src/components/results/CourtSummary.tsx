@@ -71,7 +71,7 @@ export function CourtSummary({ jobId }: CourtSummaryProps) {
           : "This video was processed without a real court calibration, so team/side and speed data may be unreliable."}
       </Typography>
 
-      <Box sx={{ position: "relative", width: "100%", maxWidth: 640, borderRadius: 2, overflow: "hidden", lineHeight: 0 }}>
+      <Box sx={{ position: "relative", width: "100%", maxWidth: 960, borderRadius: 2, overflow: "hidden", lineHeight: 0 }}>
         <Box
           component="img"
           ref={imageRef}

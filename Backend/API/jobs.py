@@ -47,6 +47,13 @@ class Job:
     # (e.g. player_tracking) instead of just a slow job overall.
     stage_durations_s: dict = field(default_factory=dict)
     error: Optional[str] = None
+    # The uploaded video's own length, not a processing duration - computed
+    # once (see jobs_router._ensure_duration) and cached here so the video
+    # list never has to re-open the file just to show it. None for jobs
+    # uploaded before this field existed, or if the video's length couldn't
+    # be read at all; either way it's backfilled the next time the job is
+    # listed or fetched.
+    duration_s: Optional[float] = None
 
     def as_dict(self) -> dict:
         return asdict(self)

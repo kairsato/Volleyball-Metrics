@@ -58,10 +58,10 @@ interface ActionFilterPreset {
 
 interface ResultsViewProps {
   job: Job;
-  onReconfigured: (job: Job) => void;
+  onJobUpdated: (job: Job) => void;
 }
 
-export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
+export function ResultsView({ job, onJobUpdated }: ResultsViewProps) {
   const [results, setResults] = useState<ResultsOut | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState(() => readTabFromUrl());
@@ -98,7 +98,7 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
   useEffect(() => {
     document.title = job.original_filename;
     return () => {
-      document.title = "Volleyball Analytics";
+      document.title = "Volleyball Metrics";
     };
   }, [job.original_filename]);
 
@@ -158,10 +158,11 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
     return () => el.removeEventListener("timeupdate", handleTimeUpdate);
   }, [playlist]);
 
-  const unnamedPlayerCount = useMemo(() => {
-    if (!results) return 0;
-    return Object.values(results.players).filter((p) => !p.name).length;
-  }, [results]);
+  // Drives the number badge on the Setup tab below - the same
+  // needs_player_id/needs_scoring_review flags the video grid uses for its
+  // own "Setup needed" chip (see VideoGrid.tsx), computed server-side so
+  // this doesn't need its own fetch just to count unnamed players.
+  const setupAttentionCount = (job.needs_player_id ? 1 : 0) + (job.needs_scoring_review ? 1 : 0);
 
   const flatEvents = useMemo<FlatEvent[]>(() => {
     if (!results) return [];
@@ -174,12 +175,17 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
     return events.sort((a, b) => a.frame_idx - b.frame_idx);
   }, [results]);
 
-  function seekTo(timeS: number) {
+  // `pause: true` is for jumping to a single reference frame (the player
+  // preview's "jump to it") - the point there is to freeze on that exact
+  // moment for a visual comparison, not to keep playing past it the way
+  // seeking from Rallies/Actions ("Play", "Play all touches") should.
+  function seekTo(timeS: number, pause = false) {
     setPlaylist(null);
     const el = videoRef.current;
     if (!el) return;
     el.currentTime = timeS;
-    void el.play();
+    if (pause) el.pause();
+    else void el.play();
   }
 
   function playAll(timestamps: number[]) {
@@ -199,21 +205,6 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
 
   return (
     <Box sx={{ height: PAGE_CONTENT_HEIGHT, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      {unnamedPlayerCount > 0 && (
-        <Alert
-          severity="warning"
-          sx={{ mb: 2, flexShrink: 0 }}
-          action={
-            <Button color="inherit" size="small" onClick={() => changeTab(TAB_NAMES.indexOf("setup"))}>
-              Assign names
-            </Button>
-          }
-        >
-          {unnamedPlayerCount} player{unnamedPlayerCount === 1 ? "" : "s"} still {unnamedPlayerCount === 1 ? "needs" : "need"} a
-          name - stats below use numeric IDs until you assign them in the Setup tab.
-        </Alert>
-      )}
-
       <Box sx={{ flex: 1, minHeight: 0, display: "flex", gap: 3, overflow: "hidden" }}>
         <Box sx={{ flex: "5 1 760px", minWidth: 520, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <Box
@@ -249,22 +240,32 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
         </Box>
 
         <Box sx={{ flex: "2 1 380px", minWidth: 340, minHeight: 0, overflowY: "auto", pr: 0.5 }}>
-          <Tabs
-            value={tab}
-            onChange={(_, value) => changeTab(value)}
-            sx={{ mb: 2, borderBottom: 1, borderColor: "divider", position: "sticky", top: 0, bgcolor: "background.default", zIndex: 1 }}
+          <Stack
+            direction="row"
+            sx={{
+              alignItems: "center",
+              mb: 2,
+              borderBottom: 1,
+              borderColor: "divider",
+              position: "sticky",
+              top: 0,
+              bgcolor: "background.default",
+              zIndex: 1,
+            }}
           >
-            <Tab label="Overall" />
-            <Tab label="Rallies" />
-            <Tab label="Actions" />
-            <Tab
-              label={
-                <Badge color="warning" variant="dot" invisible={unnamedPlayerCount === 0} sx={{ "& .MuiBadge-badge": { right: -8 } }}>
-                  Setup
-                </Badge>
-              }
-            />
-          </Tabs>
+            <Tabs value={tab} onChange={(_, value) => changeTab(value)} sx={{ flex: 1, minWidth: 0 }}>
+              <Tab label="Overall" />
+              <Tab label="Rallies" />
+              <Tab label="Actions" />
+              <Tab
+                label={
+                  <Badge badgeContent={setupAttentionCount} color="warning" sx={{ "& .MuiBadge-badge": { right: -10, top: -2 } }}>
+                    Setup
+                  </Badge>
+                }
+              />
+            </Tabs>
+          </Stack>
 
           {tab === 0 && <OverallTab results={results} flatEvents={flatEvents} onSeek={seekTo} onJumpToAction={jumpToAction} />}
           {tab === 1 && (
@@ -286,7 +287,7 @@ export function ResultsView({ job, onReconfigured }: ResultsViewProps) {
               presetFilter={actionFilterPreset}
             />
           )}
-          {tab === TAB_NAMES.indexOf("setup") && <SetupTab job={job} onSaved={onReconfigured} />}
+          {tab === 3 && <SetupTab job={job} onJobUpdated={onJobUpdated} />}
         </Box>
       </Box>
     </Box>

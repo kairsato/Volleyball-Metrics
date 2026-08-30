@@ -17,11 +17,12 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutlined";
+import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircle";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import ZoomInIcon from "@mui/icons-material/ZoomIn";
 import { api } from "../lib/api";
-import type { Job, Player } from "../lib/types";
+import type { CandidateMatch, Job, Player } from "../lib/types";
 import { LoadingSpinner } from "./LoadingSpinner";
 
 interface PlayerGroupingEditorProps {
@@ -31,6 +32,10 @@ interface PlayerGroupingEditorProps {
   saveButtonLabel: string;
   /** When set, clicking save shows a confirmation dialog with this message first. */
   confirmBeforeSave?: string;
+  /** When set, the timestamp shown in the preview dialog becomes clickable
+   * and seeks the (externally rendered) video player there - omitted where
+   * there's no video player nearby to seek, e.g. the pre-processing review. */
+  onSeek?: (timeS: number, pause?: boolean) => void;
   onSaved: (job: Job) => void;
 }
 
@@ -40,13 +45,18 @@ function formatTimestamp(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// Union-find over stable_ids linked by candidate_matches (transitively - if
-// A might be B and B might be C, all three show up as one cluster) so the
-// UI can visually group "might be the same person" cards together instead
-// of scattering them through the grid.
-function clusterByCandidates(players: Player[], matches: { a: number; b: number }[]): Player[][] {
+// Only pairs at least this confident get the visible "might be the same
+// person" dashed-box treatment - the backend already limits what it sends
+// to appearance matches worth mentioning at all, but that bar alone still
+// let dozens of pairs "have some resemblance" without genuinely looking
+// like the same person. Pairs below this bar still influence card ORDER
+// (see arrangePlayers) so related-looking players end up near each other
+// even when they're not confident enough to flag outright.
+const GROUP_DISPLAY_MIN_CONFIDENCE = 0.65;
+
+function buildUnionFind(ids: number[], pairs: { a: number; b: number }[]): (id: number) => number {
   const parent = new Map<number, number>();
-  for (const p of players) parent.set(p.stable_id, p.stable_id);
+  for (const id of ids) parent.set(id, id);
 
   function find(x: number): number {
     let root = x;
@@ -59,23 +69,55 @@ function clusterByCandidates(players: Player[], matches: { a: number; b: number 
     return root;
   }
 
-  for (const { a, b } of matches) {
+  for (const { a, b } of pairs) {
     if (!parent.has(a) || !parent.has(b)) continue;
     const ra = find(a);
     const rb = find(b);
     if (ra !== rb) parent.set(ra, rb);
   }
 
-  const byRoot = new Map<number, Player[]>();
+  return find;
+}
+
+// Arranges players into display chunks: consecutive cards sharing a
+// high-confidence candidate match are grouped into one "might be the same
+// person" box; everything else renders as its own standalone card. The
+// overall ORDER (which chunk comes before which, and where an unboxed card
+// sits) is instead driven by every candidate match regardless of
+// confidence, so a pair too uncertain to box up still ends up positioned
+// next to each other - a softer "these might be worth comparing" hint via
+// proximity instead of a false-confidence box.
+function arrangePlayers(players: Player[], matches: CandidateMatch[]): Player[][] {
+  const ids = players.map((p) => p.stable_id);
+  const findOrderRoot = buildUnionFind(ids, matches);
+  const findDisplayRoot = buildUnionFind(
+    ids,
+    matches.filter((m) => m.confidence >= GROUP_DISPLAY_MIN_CONFIDENCE),
+  );
+
+  const groupMinId = new Map<number, number>();
   for (const p of players) {
-    const root = find(p.stable_id);
-    if (!byRoot.has(root)) byRoot.set(root, []);
-    byRoot.get(root)!.push(p);
+    const root = findOrderRoot(p.stable_id);
+    groupMinId.set(root, Math.min(groupMinId.get(root) ?? Infinity, p.stable_id));
   }
 
-  return Array.from(byRoot.values())
-    .map((group) => group.sort((a, b) => a.stable_id - b.stable_id))
-    .sort((a, b) => a[0].stable_id - b[0].stable_id);
+  const sorted = [...players].sort((a, b) => {
+    const ga = groupMinId.get(findOrderRoot(a.stable_id))!;
+    const gb = groupMinId.get(findOrderRoot(b.stable_id))!;
+    return ga !== gb ? ga - gb : a.stable_id - b.stable_id;
+  });
+
+  const chunks: Player[][] = [];
+  for (const p of sorted) {
+    const root = findDisplayRoot(p.stable_id);
+    const last = chunks[chunks.length - 1];
+    if (last && findDisplayRoot(last[0].stable_id) === root) {
+      last.push(p);
+    } else {
+      chunks.push([p]);
+    }
+  }
+  return chunks;
 }
 
 interface PlayerCardProps {
@@ -172,10 +214,11 @@ export function PlayerGroupingEditor({
   description,
   saveButtonLabel,
   confirmBeforeSave,
+  onSeek,
   onSaved,
 }: PlayerGroupingEditorProps) {
   const [players, setPlayers] = useState<Player[] | null>(null);
-  const [candidateMatches, setCandidateMatches] = useState<{ a: number; b: number }[]>([]);
+  const [candidateMatches, setCandidateMatches] = useState<CandidateMatch[]>([]);
   const [roster, setRoster] = useState<string[]>([]);
   const [names, setNames] = useState<Record<string, string>>({});
   const [ignoredIds, setIgnoredIds] = useState<Set<number>>(new Set());
@@ -210,7 +253,7 @@ export function PlayerGroupingEditor({
       .catch(() => undefined);
   }, []);
 
-  const clusters = useMemo(() => clusterByCandidates(players ?? [], candidateMatches), [players, candidateMatches]);
+  const clusters = useMemo(() => arrangePlayers(players ?? [], candidateMatches), [players, candidateMatches]);
 
   function toggleIgnored(stableId: number) {
     setIgnoredIds((prev) => {
@@ -307,24 +350,45 @@ export function PlayerGroupingEditor({
               </IconButton>
             </DialogTitle>
             <DialogContent>
-              {previewPlayer.thumbnail_base64 ? (
-                <Box
-                  component="img"
-                  src={`data:image/jpeg;base64,${previewPlayer.thumbnail_base64}`}
-                  alt={`Player ${previewPlayer.stable_id}`}
-                  sx={{ width: "100%", borderRadius: 2, display: "block" }}
-                />
+              <Box sx={{ width: "100%", height: 420, borderRadius: 2, overflow: "hidden", bgcolor: "action.hover" }}>
+                {previewPlayer.thumbnail_base64 ? (
+                  <Box
+                    component="img"
+                    src={`data:image/jpeg;base64,${previewPlayer.thumbnail_base64}`}
+                    alt={`Player ${previewPlayer.stable_id}`}
+                    sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+                  />
+                ) : (
+                  <Box sx={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Typography color="text.secondary">No thumbnail available.</Typography>
+                  </Box>
+                )}
+              </Box>
+
+              {previewPlayer.thumbnail_frame_idx != null ? (
+                onSeek && previewPlayer.thumbnail_timestamp_s != null ? (
+                  <Button
+                    size="small"
+                    startIcon={<PlayCircleOutlineIcon />}
+                    sx={{ mt: 1.5 }}
+                    onClick={() => {
+                      onSeek(previewPlayer.thumbnail_timestamp_s!, true);
+                      setPreviewPlayer(null);
+                    }}
+                  >
+                    Frame {previewPlayer.thumbnail_frame_idx} ({formatTimestamp(previewPlayer.thumbnail_timestamp_s)}) - jump to it
+                  </Button>
+                ) : (
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+                    Taken from frame {previewPlayer.thumbnail_frame_idx}
+                    {previewPlayer.thumbnail_timestamp_s != null && ` (${formatTimestamp(previewPlayer.thumbnail_timestamp_s)})`}
+                  </Typography>
+                )
               ) : (
-                <Typography color="text.secondary">No thumbnail available.</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+                  Source frame unknown.
+                </Typography>
               )}
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-                {previewPlayer.thumbnail_frame_idx != null
-                  ? `Taken from frame ${previewPlayer.thumbnail_frame_idx}` +
-                    (previewPlayer.thumbnail_timestamp_s != null
-                      ? ` (${formatTimestamp(previewPlayer.thumbnail_timestamp_s)})`
-                      : "")
-                  : "Source frame unknown."}
-              </Typography>
             </DialogContent>
           </>
         )}

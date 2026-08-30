@@ -19,10 +19,23 @@ import CheckIcon from "@mui/icons-material/Check";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import SettingsIcon from "@mui/icons-material/Settings";
-import { BrowserRouter, Link as RouterLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Link as RouterLink,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useSearchParams,
+} from "react-router-dom";
 import { CreditsPage } from "./pages/CreditsPage";
 import { HomePage } from "./pages/HomePage";
-import { StatsPage } from "./pages/StatsPage";
+import { PlayerIdentificationPage } from "./pages/PlayerIdentificationPage";
+import { PlayersPage } from "./pages/PlayersPage";
+import { PlayerStatsPage } from "./pages/PlayerStatsPage";
+import { ScoringDeterminationPage } from "./pages/ScoringDeterminationPage";
+import { TeamsPage } from "./pages/TeamsPage";
 import { VideoPage } from "./pages/VideoPage";
 import { VideosPage } from "./pages/VideosPage";
 import { UploadPanel } from "./components/UploadPanel";
@@ -69,9 +82,27 @@ function SettingsMenu() {
 const NAV_ITEMS = [
   { label: "Home", to: "/home" },
   { label: "Videos", to: "/videos" },
-  { label: "Stats", to: "/stats" },
+  { label: "Players", to: "/players" },
+  { label: "Teams", to: "/teams" },
   { label: "Credits", to: "/credits" },
 ];
+
+// The Setup page used to be a standalone /video/setup?job=&tab=<name> route
+// with its own Court/Players/Score tabs; Setup is a tab on the results page
+// again now (see ResultsView.tsx's SetupTab), with Court living in a dialog
+// there and Players/Score each getting their own page. This keeps any old
+// /video/setup links (bookmarks, the Players page's per-video shortcuts
+// elsewhere) working by mapping their ?tab= value onto the new destination.
+function LegacySetupRedirect() {
+  const [searchParams] = useSearchParams();
+  const jobId = searchParams.get("job");
+  const tab = searchParams.get("tab");
+
+  if (!jobId) return <Navigate to="/videos" replace />;
+  if (tab === "players") return <Navigate to={`/video/setup/player-identification?job=${jobId}`} replace />;
+  if (tab === "score") return <Navigate to={`/video/setup/scoring-determination?job=${jobId}`} replace />;
+  return <Navigate to={`/video?job=${jobId}&tab=setup`} replace />;
+}
 
 function TopNav() {
   const location = useLocation();
@@ -86,7 +117,7 @@ function TopNav() {
           to="/home"
           sx={{ fontWeight: 600, textDecoration: "none", color: "inherit", whiteSpace: "nowrap" }}
         >
-          🏐 Volleyball Analytics
+          🏐 Volleyball Metrics
         </Typography>
 
         <Tabs value={activeTo} sx={{ flexGrow: 1, minHeight: 0 }}>
@@ -184,12 +215,21 @@ function AppContent() {
               />
             }
           />
-          <Route path="/stats" element={<StatsPage jobs={jobs} />} />
+          <Route path="/players" element={<PlayersPage jobs={jobs} />} />
+          <Route path="/player" element={<PlayerStatsPage jobs={jobs} />} />
+          <Route path="/teams" element={<TeamsPage jobs={jobs} />} />
           <Route path="/credits" element={<CreditsPage />} />
           <Route path="/video" element={<VideoPage onJobUpdated={handleJobUpdated} />} />
-          {/* Old routes from before Playlist/Results were renamed to Videos - redirect rather than 404 in case anything still links here. */}
+          <Route path="/video/setup" element={<LegacySetupRedirect />} />
+          <Route
+            path="/video/setup/player-identification"
+            element={<PlayerIdentificationPage onJobUpdated={handleJobUpdated} />}
+          />
+          <Route path="/video/setup/scoring-determination" element={<ScoringDeterminationPage />} />
+          {/* Old routes from before Playlist/Results were renamed to Videos, and Stats to Players - redirect rather than 404 in case anything still links here. */}
           <Route path="/playlist" element={<Navigate to="/videos" replace />} />
           <Route path="/results" element={<Navigate to={`/video${location.search}`} replace />} />
+          <Route path="/stats" element={<Navigate to="/players" replace />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </Box>

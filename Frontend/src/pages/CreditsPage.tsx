@@ -58,9 +58,6 @@ const CREDITS: CreditEntry[] = [
 export function CreditsPage() {
   return (
     <Box sx={{ maxWidth: 860 }}>
-      <Typography variant="h4" sx={{ fontWeight: 700, mb: 1 }}>
-        Credits
-      </Typography>
       <Typography color="text.secondary" sx={{ mb: 4 }}>
         This app combines several detection and classification models, some trained for this project and some
         fine-tuned or adapted from open-source work. Attribution and license terms for each below.

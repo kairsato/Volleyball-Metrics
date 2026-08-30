@@ -58,16 +58,17 @@ POSITIONS_LOG_NAME = "player_positions.json"
 CANDIDATE_MATCHES_LOG_NAME = "player_candidate_matches.json"
 
 # Appearance-only distance bar for flagging two *separate* final identities
-# as "might be the same person" in the player review UI. Looser than
-# MERGE_MAX_COST (0.45) on purpose - these are pairs consolidate() did NOT
-# merge, usually because the gap between them was too long or the cost's
-# spatial component pushed it over, not because they look different. Above
-# this bar the appearance match itself is too weak to be worth a human's
-# time; below it (and MERGE_MAX_COST already covers below that), a false
-# "might be the same person" hint just costs the user one glance, while a
-# real fragmented identity split across two untouched player cards costs
-# them a wrong stat table.
-CANDIDATE_MAX_APPEARANCE_DISTANCE = 0.6
+# as "might be the same person" in the player review UI - pairs
+# consolidate() did NOT merge, usually because the gap between them was too
+# long or the cost's spatial component pushed it over, not because they
+# look different. This was originally 0.6, which on real footage flagged
+# something like every other pair in the video (dozens of hints for a
+# 5-minute clip) - nowhere near "might be the same person", just "isn't
+# wildly different", which isn't a useful signal. Tightened to roughly
+# MERGE_MAX_COST's own bar: below this, two players plausibly look like the
+# same person; above it, the appearance match is too weak to be worth a
+# human's time.
+CANDIDATE_MAX_APPEARANCE_DISTANCE = 0.45
 
 # A 1-2 frame tracklet is almost always jitter that survived fuse()'s own
 # 2-tracker agreement check by luck; anything shorter than this never gets a

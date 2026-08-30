@@ -35,7 +35,13 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
       if (cancelled) return;
       setJob(updated);
       onJobUpdated(updated);
-      if (!RUNNING_STATUSES.includes(updated.status)) setCancelling(false);
+      if (!RUNNING_STATUSES.includes(updated.status)) {
+        setCancelling(false);
+        // Nothing changes this job's status on its own once it's out of a
+        // running state - polling every 3s forever for as long as this
+        // page stayed open was just wasted requests.
+        clearInterval(timer);
+      }
     }
 
     api.getJob(jobId).then(apply).catch((err) => {
@@ -160,7 +166,7 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
         />
       )}
 
-      {job.status === "complete" && <ResultsView job={job} onReconfigured={handleFinalized} />}
+      {job.status === "complete" && <ResultsView job={job} onJobUpdated={applyUpdate} />}
 
       {job.status === "error" && (
         <Box sx={{ maxWidth: 560 }}>

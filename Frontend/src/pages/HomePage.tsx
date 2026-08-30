@@ -5,7 +5,6 @@ import Card from "@mui/material/Card";
 import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import AddIcon from "@mui/icons-material/Add";
 import { api } from "../lib/api";
 import type { Job } from "../lib/types";
 import { VideoGrid } from "../components/VideoGrid";
@@ -74,15 +73,6 @@ export function HomePage({ jobs, onSelectJob, onAddVideo, onViewVideos }: HomePa
 
   return (
     <Box>
-      <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 3 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          Home
-        </Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={onAddVideo}>
-          New video
-        </Button>
-      </Stack>
-
       <Grid container spacing={2} sx={{ mb: 5 }}>
         <StatTile value={jobs.length} label="Videos" />
         <StatTile value={completed} label="Completed" />
@@ -99,7 +89,7 @@ export function HomePage({ jobs, onSelectJob, onAddVideo, onViewVideos }: HomePa
         {jobs.length > 0 && <Button onClick={onViewVideos}>View all in Videos</Button>}
       </Stack>
 
-      <VideoGrid jobs={recent} onSelectJob={onSelectJob} />
+      <VideoGrid jobs={recent} onSelectJob={onSelectJob} onAddVideo={onAddVideo} />
     </Box>
   );
 }

@@ -69,13 +69,22 @@ def _load_json(path: Path):
     return json.loads(path.read_text()) if path.exists() else None
 
 
-def assign_teams(output_path: Path) -> dict[int, dict]:
+def assign_teams(output_path: Path, frame_range: Optional[tuple[int, int]] = None) -> dict[int, dict]:
     """canonical stable_id -> {"team": "A"|"B", "avg_court_x": float, "samples": int},
     for every named-or-not player with enough tracked positions to trust.
-    Ignored players (ref, coach, false detections) are left out entirely."""
+    Ignored players (ref, coach, false detections) are left out entirely.
+
+    frame_range, if given, restricts the aggregation to
+    [start_frame, end_frame] inclusive - used by score.py to work out each
+    side's occupant one game/set at a time, since teams can swap sides
+    between sets and a whole-video average would blur the two together."""
     positions = _load_json(output_path / PLAYER_POSITIONS_NAME)
     if not positions:
         return {}
+
+    if frame_range is not None:
+        start_frame, end_frame = frame_range
+        positions = [f for f in positions if start_frame <= f["frame_idx"] <= end_frame]
 
     mapping = build_canonical_mapping(load_names(output_path))
     ignored = load_ignored(output_path)

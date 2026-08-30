@@ -12,6 +12,7 @@ STATS_NAME = "player_stats.json"
 ACTIONS_NAME = "actions.json"
 GROUPED_ACTIONS_NAME = "actions_grouped.json"
 CANDIDATE_MATCHES_NAME = "player_candidate_matches.json"
+THUMBNAIL_CACHE_NAME = "player_thumbnails_cache.json"
 
 THUMBNAIL_MAX_DIM = 220
 JPEG_QUALITY = 85
@@ -184,18 +185,50 @@ def save_ignored(output_path: Path, ignored: set[int]) -> list[int]:
     return result
 
 
+def _load_thumbnail_cache(output_path: Path) -> dict:
+    cache_file = output_path / THUMBNAIL_CACHE_NAME
+    if not cache_file.exists():
+        return {}
+    try:
+        return json.loads(cache_file.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_thumbnail_cache(output_path: Path, cache: dict):
+    cache_file = output_path / THUMBNAIL_CACHE_NAME
+    cache_file.write_text(json.dumps(cache))
+
+
 def list_players(video_path: Path, output_path: Path, with_thumbnails: bool = True) -> list[dict]:
     positions = _load_player_positions(output_path)
     best = _best_crop_per_player(positions, _frame_size(video_path))
     names = load_names(output_path)
     ignored = load_ignored(output_path)
 
+    # Extracting a thumbnail means opening the video and seeking to a
+    # specific frame - the single slowest part of this endpoint, and one
+    # that's completely wasted work on every repeat call (the Setup tab,
+    # PlayerReview, and the Stats page - which does this for every
+    # completed job at once) since the chosen frame/box for a given
+    # stable_id never changes once tracking has finished. Cache it to disk
+    # instead of re-seeking the video every time.
+    cache = _load_thumbnail_cache(output_path) if with_thumbnails else {}
+    cache_dirty = False
+
     players = []
     for stable_id in sorted(best):
         record = best[stable_id]
         thumbnail = None
         if with_thumbnails:
-            thumbnail = _extract_thumbnail(video_path, record["frame_idx"], record["box"])
+            cache_key = str(stable_id)
+            cached = cache.get(cache_key)
+            if cached is not None and cached.get("frame_idx") == record["frame_idx"]:
+                thumbnail = cached["thumbnail_base64"]
+            else:
+                thumbnail = _extract_thumbnail(video_path, record["frame_idx"], record["box"])
+                cache[cache_key] = {"thumbnail_base64": thumbnail, "frame_idx": record["frame_idx"]}
+                cache_dirty = True
 
         players.append({
             "stable_id": stable_id,
@@ -206,6 +239,9 @@ def list_players(video_path: Path, output_path: Path, with_thumbnails: bool = Tr
             "thumbnail_timestamp_s": record["timestamp_s"],
             "ignored": stable_id in ignored,
         })
+
+    if cache_dirty:
+        _save_thumbnail_cache(output_path, cache)
 
     return players
 

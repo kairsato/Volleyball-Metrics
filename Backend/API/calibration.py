@@ -26,15 +26,21 @@ from . import config
 JPEG_QUALITY = 90
 
 
-def read_calibration_frame(video_path: Path) -> tuple[bytes, int, int]:
-    """Grabs the same frame the desktop calibration tool used to open (frame
-    0 by default) and returns it JPEG-encoded, for a web UI to draw on."""
+def read_calibration_frame(video_path: Path, timestamp_s: Optional[float] = None) -> tuple[bytes, int, int]:
+    """Grabs a single frame JPEG-encoded for a web UI to draw on - frame 0 by
+    default (the desktop calibration tool's fixed frame), or a specific
+    timestamp when given, so callers like the score OCR region picker can
+    let the user scrub to a moment where whatever they're marking is
+    actually visible."""
     cap = cv2.VideoCapture(str(video_path))
     try:
         if not cap.isOpened():
             raise ValueError("Could not open video")
 
-        cap.set(cv2.CAP_PROP_POS_FRAMES, CALIBRATION_FRAME)
+        if timestamp_s is not None:
+            cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, timestamp_s) * 1000)
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, CALIBRATION_FRAME)
         success, frame = cap.read()
         if not success:
             raise ValueError("Could not read the calibration frame")
@@ -45,6 +51,24 @@ def read_calibration_frame(video_path: Path) -> tuple[bytes, int, int]:
             raise ValueError("Could not encode the calibration frame")
 
         return bytes(buffer), width, height
+    finally:
+        cap.release()
+
+
+def video_duration_s(video_path: Path) -> Optional[float]:
+    """The video's own length in seconds, from its container metadata - no
+    frame is actually decoded, so this is cheap enough to call once per
+    upload (and, as a backfill, once per already-uploaded job that predates
+    Job.duration_s existing)."""
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            return None
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if fps <= 0 or frame_count <= 0:
+            return None
+        return frame_count / fps
     finally:
         cap.release()
 
