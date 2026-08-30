@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile
 
-from .. import calibration, config, pipeline, score
+from .. import calibration, config, pipeline, players, score
 from ..jobs import (
     STATUS_AWAITING_PLAYER_REVIEW,
     STATUS_CANCELLED,
@@ -45,11 +45,21 @@ def _ensure_duration(job: Job) -> Job:
 
 
 def _needs_player_id(output_path: Path) -> bool:
+    """Mirrors score.compute_summary's needs_review: reflects whether the
+    user has explicitly confirmed player identification (see
+    players.load_player_confirmed), not just "is anyone currently
+    unnamed" - confirming is itself gated on nobody being unresolved (see
+    the frontend), so "confirmed" is the stronger signal of the two: not
+    just "nothing's unnamed right now" but "a human actually looked at
+    this and signed off". A video with no detected players at all needs no
+    review regardless."""
     stats_file = output_path / config.STATS_FILE_NAME
     if not stats_file.exists():
         return False
     stats = json.loads(stats_file.read_text())
-    return any(not p.get("name") for p in stats.get("players", {}).values())
+    if not stats.get("players"):
+        return False
+    return not players.load_player_confirmed(output_path)
 
 
 def _job_out(job: Job) -> JobOut:

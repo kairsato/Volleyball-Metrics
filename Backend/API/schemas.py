@@ -47,6 +47,13 @@ class PlayersListOut(BaseModel):
     job_id: str
     players: list[PlayerOut]
     candidate_matches: list[CandidateMatchOut] = []
+    # Whether the user has explicitly signed off on this video's player
+    # identification - see players.load_player_confirmed.
+    confirmed: bool = False
+
+
+class PlayerConfirmIn(BaseModel):
+    confirmed: bool
 
 
 class NamesUpdateIn(BaseModel):

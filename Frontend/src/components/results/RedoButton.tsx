@@ -13,6 +13,7 @@ interface RedoButtonProps {
   confirmText: string;
   onConfirm: () => Promise<void>;
   fullWidth?: boolean;
+  disabled?: boolean;
 }
 
 // A second, explicit confirmation is always required before either redo
@@ -20,7 +21,7 @@ interface RedoButtonProps {
 // click should trigger. Shared by the video Setup page's Court and
 // Unidentified players tabs (each reprocesses the video differently, but
 // the confirm-then-run shape is identical).
-export function RedoButton({ label, confirmTitle, confirmText, onConfirm, fullWidth }: RedoButtonProps) {
+export function RedoButton({ label, confirmTitle, confirmText, onConfirm, fullWidth, disabled }: RedoButtonProps) {
   const [open, setOpen] = useState(false);
   const [running, setRunning] = useState(false);
 
@@ -41,6 +42,7 @@ export function RedoButton({ label, confirmTitle, confirmText, onConfirm, fullWi
         color="warning"
         startIcon={<RestartAltIcon />}
         fullWidth={fullWidth}
+        disabled={disabled}
         onClick={() => setOpen(true)}
       >
         {label}

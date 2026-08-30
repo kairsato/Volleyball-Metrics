@@ -13,6 +13,7 @@ ACTIONS_NAME = "actions.json"
 GROUPED_ACTIONS_NAME = "actions_grouped.json"
 CANDIDATE_MATCHES_NAME = "player_candidate_matches.json"
 THUMBNAIL_CACHE_NAME = "player_thumbnails_cache.json"
+PLAYER_CONFIG_NAME = "player_config.json"
 
 THUMBNAIL_MAX_DIM = 220
 JPEG_QUALITY = 85
@@ -117,7 +118,11 @@ def _best_crop_per_player(positions: list[dict], frame_size: Optional[tuple[floa
     return best
 
 
-def _extract_thumbnail(video_path: Path, frame_idx: int, box: list[float]) -> Optional[str]:
+def _extract_crop(video_path: Path, frame_idx: int, box: list[float]):
+    """The padded, raw BGR crop around box at frame_idx, or None if the
+    frame/box is unusable - shared by _extract_thumbnail (which additionally
+    resizes and JPEG-encodes it for the UI) and embed_player (which wants
+    the raw pixels for the appearance encoder, not a re-decoded JPEG)."""
     cap = cv2.VideoCapture(str(video_path))
     try:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -134,19 +139,25 @@ def _extract_thumbnail(video_path: Path, frame_idx: int, box: list[float]) -> Op
         if x2 <= x1 or y2 <= y1:
             return None
 
-        crop = frame[y1:y2, x1:x2]
-
-        scale = THUMBNAIL_MAX_DIM / max(crop.shape[0], crop.shape[1])
-        if scale < 1.0:
-            crop = cv2.resize(crop, (int(crop.shape[1] * scale), int(crop.shape[0] * scale)))
-
-        ok, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-        if not ok:
-            return None
-
-        return base64.b64encode(buffer).decode("ascii")
+        return frame[y1:y2, x1:x2]
     finally:
         cap.release()
+
+
+def _extract_thumbnail(video_path: Path, frame_idx: int, box: list[float]) -> Optional[str]:
+    crop = _extract_crop(video_path, frame_idx, box)
+    if crop is None:
+        return None
+
+    scale = THUMBNAIL_MAX_DIM / max(crop.shape[0], crop.shape[1])
+    if scale < 1.0:
+        crop = cv2.resize(crop, (int(crop.shape[1] * scale), int(crop.shape[0] * scale)))
+
+    ok, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    if not ok:
+        return None
+
+    return base64.b64encode(buffer).decode("ascii")
 
 
 def load_names(output_path: Path) -> dict[str, str]:
@@ -183,6 +194,26 @@ def save_ignored(output_path: Path, ignored: set[int]) -> list[int]:
     ignored_file = output_path / config.PLAYER_IGNORED_NAME
     ignored_file.write_text(json.dumps(result))
     return result
+
+
+def load_player_confirmed(output_path: Path) -> bool:
+    """Whether the user has explicitly signed off on this video's player
+    identification - same state-management pattern as scoring's
+    score_config.json "confirmed" flag (see score.py), just for player
+    identification instead."""
+    cfg_file = output_path / PLAYER_CONFIG_NAME
+    if not cfg_file.exists():
+        return False
+    try:
+        return bool(json.loads(cfg_file.read_text()).get("confirmed", False))
+    except json.JSONDecodeError:
+        return False
+
+
+def save_player_confirmed(output_path: Path, confirmed: bool) -> bool:
+    cfg_file = output_path / PLAYER_CONFIG_NAME
+    cfg_file.write_text(json.dumps({"confirmed": confirmed}))
+    return confirmed
 
 
 def _load_thumbnail_cache(output_path: Path) -> dict:
@@ -244,6 +275,70 @@ def list_players(video_path: Path, output_path: Path, with_thumbnails: bool = Tr
         _save_thumbnail_cache(output_path, cache)
 
     return players
+
+
+def embed_player(video_path: Path, output_path: Path, stable_id: int) -> Optional[list]:
+    """The appearance embedding for one player's own best crop - used to add
+    a newly-named player into the global cross-video gallery (see
+    player_gallery.remember, called from the /players/names endpoint right
+    after a name is saved) so a *future* video's still-unnamed detections
+    can be matched against them."""
+    positions = _load_player_positions(output_path)
+    best = _best_crop_per_player(positions, _frame_size(video_path))
+    record = best.get(stable_id)
+    if record is None:
+        return None
+
+    crop = _extract_crop(video_path, record["frame_idx"], record["box"])
+    if crop is None:
+        return None
+
+    from . import player_gallery
+
+    return player_gallery.embed_crop(crop)
+
+
+def auto_identify_from_gallery(video_path: Path, output_path: Path) -> int:
+    """Runs once, right after player tracking finishes for a video (see
+    pipeline._phase_one) - compares every detected player's appearance
+    against the global cross-video gallery (player_gallery.py) and writes
+    in any confident, unambiguous match directly to player_names.json
+    before a human ever opens the Setup tab's Player Identification page.
+    Already-named or already-ignored players are left untouched. This is
+    deliberately conservative (see player_gallery's distance/margin
+    thresholds) - a wrong auto-name would silently corrupt that person's
+    stats, so it only ever acts on matches confident enough that a human
+    reviewing them would agree. Returns how many players were auto-matched,
+    for the pipeline log."""
+    from . import player_gallery
+
+    positions = _load_player_positions(output_path)
+    if not positions:
+        return 0
+
+    best = _best_crop_per_player(positions, _frame_size(video_path))
+    names = load_names(output_path)
+    ignored = load_ignored(output_path)
+
+    matched: dict[str, str] = {}
+    for stable_id, record in best.items():
+        if stable_id in ignored or names.get(str(stable_id)):
+            continue
+        crop = _extract_crop(video_path, record["frame_idx"], record["box"])
+        if crop is None:
+            continue
+        embedding = player_gallery.embed_crop(crop)
+        if embedding is None:
+            continue
+        result = player_gallery.match(embedding)
+        if result is None:
+            continue
+        matched[str(stable_id)] = result[0]
+
+    if matched:
+        save_names(output_path, matched)
+
+    return len(matched)
 
 
 def load_candidate_matches(output_path: Path) -> list[dict]:

@@ -65,6 +65,10 @@ export function PlayerIdentificationPage({ onJobUpdated }: PlayerIdentificationP
         players.players.filter((p) => p.name).map((p) => [String(p.stable_id), ""]),
       );
       await api.updateNames(jobId, clearNames, []);
+      // Everyone's back to unidentified - any earlier "confirmed" sign-off
+      // no longer reflects reality, so it has to be cleared too, or the
+      // Setup tab would keep showing "Done" with nobody actually named.
+      await api.setPlayersConfirmed(jobId, false);
       onJobUpdated(await api.finalizeJob(jobId));
       navigate(`/video?job=${jobId}`);
     } catch (err) {

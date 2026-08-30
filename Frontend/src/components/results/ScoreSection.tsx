@@ -29,6 +29,7 @@ import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { api } from "../../lib/api";
 import type { Job, OcrRegion, Rally, ScoreConfig, ScoreMethod, ScoreResult, TeamEntry } from "../../lib/types";
+import { LockOverlay } from "./LockOverlay";
 import { ScoreRegionPicker } from "./ScoreRegionPicker";
 import { ScoreTrackEditor, WIN_COLOR, LOSS_COLOR } from "./ScoreTrackEditor";
 import { formatTimestamp } from "./types";
@@ -70,23 +71,6 @@ const LEFT_COLUMN_WIDTH_PX = 300;
 // Seeking a game jumps most of the way through it rather than to the very
 // start - matches ScoreTrackEditor's own rally/game seek behavior.
 const SEEK_FRACTION = 0.9;
-
-// Sits over an already-rendered, already-disabled region (the Scoring
-// Determination card, the track editor) once scoring is confirmed - the
-// individual controls underneath are still marked disabled (so they read
-// as visually locked), but a disabled element never fires onClick at all,
-// which would make "locked" look simply broken rather than intentional.
-// This transparent layer is what actually catches the click and opens the
-// same "Redo scoring?" dialog the Redo Scoring button itself opens,
-// wherever on the locked area you click.
-function LockOverlay({ active, onClick }: { active: boolean; onClick: () => void }) {
-  if (!active) return null;
-  return (
-    <Tooltip title="Redo Scoring to make changes">
-      <Box onClick={onClick} sx={{ position: "absolute", inset: 0, zIndex: 2, cursor: "pointer" }} />
-    </Tooltip>
-  );
-}
 
 // The estimated score so far, one boxed card per identified game titled
 // "Match N" with its time span and a "Team 1 (2-1) Team 2" line underneath
@@ -672,7 +656,11 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
             whatever vertical space is left over. */}
         <Stack spacing={2} sx={{ width: LEFT_COLUMN_WIDTH_PX, flexShrink: 0, maxWidth: "100%", minHeight: 0 }}>
         <Card variant="outlined" sx={{ p: 2, flexShrink: 0, position: "relative" }}>
-          <LockOverlay active={scoreConfig.confirmed} onClick={() => setRedoDialogOpen(true)} />
+          <LockOverlay
+            active={scoreConfig.confirmed}
+            label="Redo Scoring to make changes"
+            onClick={() => setRedoDialogOpen(true)}
+          />
           <Typography variant="overline" color="text.secondary" sx={{ display: "block", mb: 1 }}>
             Scoring Determination
           </Typography>
@@ -835,7 +823,11 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
             </Typography>
           ) : scoreResult ? (
             <Box sx={{ position: "relative", flexShrink: 0 }}>
-              <LockOverlay active={scoreConfig.confirmed} onClick={() => setRedoDialogOpen(true)} />
+              <LockOverlay
+                active={scoreConfig.confirmed}
+                label="Redo Scoring to make changes"
+                onClick={() => setRedoDialogOpen(true)}
+              />
               <ScoreTrackEditor
                 rallies={rallies}
                 result={scoreResult}

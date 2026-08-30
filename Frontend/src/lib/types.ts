@@ -48,6 +48,9 @@ export interface PlayersListOut {
   job_id: string;
   players: Player[];
   candidate_matches: CandidateMatch[];
+  // Whether the user has explicitly signed off on this video's player
+  // identification - same pattern as ScoreConfig.confirmed.
+  confirmed: boolean;
 }
 
 export interface NamesUpdateOut {

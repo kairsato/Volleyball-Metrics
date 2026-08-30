@@ -5,7 +5,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import config
+from . import config, players
 from .jobs import (
     STATUS_CANCELLED,
     STATUS_COMPLETE,
@@ -80,6 +80,18 @@ def _phase_one(job_id: str, video_path: Path, output_path: Path):
     output_path.mkdir(parents=True, exist_ok=True)
 
     _run_stage(job_id, "player_tracking", video_path, output_path)
+
+    # Best-effort: before anyone's even looked at this video's players,
+    # check whether any of them are confidently recognizable from a person
+    # already named in a *different* video (see player_gallery.py) and
+    # write those names in now. Never fatal - a video with the appearance
+    # gallery still empty, or no players tracked at all, just gets zero
+    # matches and moves on exactly as before.
+    try:
+        players.auto_identify_from_gallery(video_path, output_path)
+    except Exception:  # noqa: BLE001 - genuinely best-effort, never blocks processing
+        traceback.print_exc()
+
     _run_stage(job_id, "ball_detection", video_path, output_path)
     _run_stage(job_id, "game_status", video_path, output_path)
     _run_stage(job_id, "action_detection", video_path, output_path)

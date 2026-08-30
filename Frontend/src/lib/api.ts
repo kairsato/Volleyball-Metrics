@@ -110,6 +110,14 @@ export const api = {
     });
   },
 
+  setPlayersConfirmed(jobId: string, confirmed: boolean): Promise<PlayersListOut> {
+    return request<PlayersListOut>(`/api/jobs/${jobId}/players/confirm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed }),
+    });
+  },
+
   getResults(jobId: string): Promise<ResultsOut> {
     return request<ResultsOut>(`/api/jobs/${jobId}/results`);
   },

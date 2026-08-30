@@ -8,7 +8,6 @@ import { PHASE_ONE_STAGES, PHASE_TWO_STAGES, phaseOneComplete } from "../lib/sta
 import type { Job } from "../lib/types";
 import { CalibrationPanel } from "./CalibrationPanel";
 import { LoadingSpinner } from "./LoadingSpinner";
-import { PlayerReview } from "./PlayerReview";
 import { ResultsView } from "./ResultsView";
 import { StageProgress } from "./StageProgress";
 
@@ -104,11 +103,6 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
     if (updated) onBackToDashboard();
   }
 
-  function handleFinalized(updated: Job) {
-    applyUpdate(updated);
-    onBackToDashboard();
-  }
-
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
   if (!job) return <LoadingSpinner />;
 
@@ -146,10 +140,6 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
           onCancel={handleCancel}
           cancelling={cancelling}
         />
-      )}
-
-      {job.status === "awaiting_player_review" && (
-        <PlayerReview job={job} onFinalized={handleFinalized} />
       )}
 
       {job.status === "finalizing" && (
