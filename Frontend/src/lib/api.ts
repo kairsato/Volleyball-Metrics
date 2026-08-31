@@ -1,10 +1,12 @@
 import type {
+  ActionQualityOut,
   CalibrationPointsOut,
   Job,
   MatchupOut,
   NamesUpdateOut,
   OcrRegion,
   Point,
+  PlayerRadarOut,
   PlayersListOut,
   ResultsOut,
   RosterOut,
@@ -13,9 +15,17 @@ import type {
   ScoreOut,
   ScoreResult,
   TeamRosterOut,
+  TeamStatsOut,
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+// Derived from wherever this page was itself loaded from, rather than a
+// hardcoded "http://127.0.0.1:8000" - a device on the LAN loading the
+// frontend via the host machine's own IP (e.g. http://192.168.1.27:5173,
+// see vite.config.ts's server.host) would otherwise have its browser call
+// 127.0.0.1:8000, which resolves to THAT device's own loopback, not the
+// host serving the app. VITE_API_BASE still overrides this when the API
+// genuinely lives somewhere else (a separate host/port from the frontend).
+const API_BASE = import.meta.env.VITE_API_BASE ?? `http://${window.location.hostname}:8000`;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, init);
@@ -61,6 +71,15 @@ export const api = {
     return request<Job>(`/api/jobs/${jobId}/redo`, { method: "POST" });
   },
 
+  // Cheap path for a calibration change on an already-complete job - see
+  // jobs_router.recalibrate_job. Re-picks the ball from its saved raw
+  // candidates and re-derives player court coordinates/auto-ignores instead
+  // of re-running tracking/detection from scratch (falls back to a full
+  // reprocess server-side for a job old enough not to have that raw data).
+  recalibrateJob(jobId: string): Promise<Job> {
+    return request<Job>(`/api/jobs/${jobId}/recalibrate`, { method: "POST" });
+  },
+
   cancelJob(jobId: string): Promise<Job> {
     return request<Job>(`/api/jobs/${jobId}/cancel`, { method: "POST" });
   },
@@ -96,6 +115,8 @@ export const api = {
     middleRight: Point,
     farLeft: Point,
     farRight: Point,
+    netTopLeft: Point,
+    netTopRight: Point,
     netHeightM: number,
   ): Promise<CalibrationPointsOut> {
     return request<CalibrationPointsOut>(`/api/jobs/${jobId}/calibration`, {
@@ -106,6 +127,8 @@ export const api = {
         middle_right: middleRight,
         far_left: farLeft,
         far_right: farRight,
+        net_top_left: netTopLeft,
+        net_top_right: netTopRight,
         net_height_m: netHeightM,
       }),
     });
@@ -147,6 +170,10 @@ export const api = {
     return request<MatchupOut>(`/api/jobs/${jobId}/matchup`);
   },
 
+  getActionQuality(jobId: string): Promise<ActionQualityOut> {
+    return request<ActionQualityOut>(`/api/jobs/${jobId}/action-quality`);
+  },
+
   getRoster(): Promise<RosterOut> {
     return request<RosterOut>("/api/roster");
   },
@@ -185,6 +212,14 @@ export const api = {
 
   deleteTeam(teamId: string): Promise<TeamRosterOut> {
     return request<TeamRosterOut>(`/api/teams/${teamId}`, { method: "DELETE" });
+  },
+
+  getTeamStats(teamId: string): Promise<TeamStatsOut> {
+    return request<TeamStatsOut>(`/api/teams/${teamId}/stats`);
+  },
+
+  getPlayerRadar(name: string): Promise<PlayerRadarOut> {
+    return request<PlayerRadarOut>(`/api/players/${encodeURIComponent(name)}/radar`);
   },
 
   async getScoreFrame(jobId: string, timestampS?: number): Promise<string> {

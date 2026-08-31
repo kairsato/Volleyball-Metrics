@@ -11,17 +11,19 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
+import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
-import AddIcon from "@mui/icons-material/Add";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import EditIcon from "@mui/icons-material/Edit";
 import GroupsIcon from "@mui/icons-material/Groups";
+import { Link as RouterLink } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Job, TeamEntry } from "../lib/types";
 import { LoadingSpinner } from "../components/LoadingSpinner";
+import { PageHeader } from "../components/PageHeader";
 import { PlayerPhotoCarousel } from "../components/PlayerPhotoCarousel";
 
 // Matches the Players page's card size (150x280) - 6 of them side by side
@@ -173,7 +175,9 @@ function TeamDialog({ open, onClose, roster, initial, onSave }: TeamDialogProps)
 // A fixed 900x280 box (six 150x280 player slots, matching the Players
 // page's card size) - the "thumbnail" is the auto-scrolling strip above
 // instead of a single image, with the team name overlaid bottom-left the
-// same way a video's filename is.
+// same way a video's filename is. The whole card links to this team's
+// stats page; Edit/Delete stay as their own icon buttons on top, each
+// stopping propagation so clicking them doesn't also navigate.
 function TeamCard({
   team,
   thumbnailsByName,
@@ -191,7 +195,10 @@ function TeamCard({
         <IconButton
           size="small"
           aria-label={`Edit ${team.name}`}
-          onClick={onEdit}
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit();
+          }}
           sx={{ color: "#fff", bgcolor: "rgba(0,0,0,0.4)", "&:hover": { bgcolor: "rgba(0,0,0,0.6)" } }}
         >
           <EditIcon fontSize="small" />
@@ -199,14 +206,21 @@ function TeamCard({
         <IconButton
           size="small"
           aria-label={`Delete ${team.name}`}
-          onClick={onRequestDelete}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRequestDelete();
+          }}
           sx={{ color: "error.main", bgcolor: "rgba(0,0,0,0.4)", "&:hover": { bgcolor: "rgba(0,0,0,0.6)" } }}
         >
           <DeleteOutlineIcon fontSize="small" />
         </IconButton>
       </Stack>
 
-      <Box sx={{ width: "100%", height: "100%", position: "relative", bgcolor: "action.hover" }}>
+      <CardActionArea
+        component={RouterLink}
+        to={`/team?id=${team.id}`}
+        sx={{ width: "100%", height: "100%", position: "relative", bgcolor: "action.hover" }}
+      >
         {team.players.length === 0 ? (
           <Box sx={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", p: 2 }}>
             <Typography color="text.secondary" align="center" variant="body2">
@@ -235,34 +249,12 @@ function TeamCard({
             {team.players.length} player{team.players.length === 1 ? "" : "s"}
           </Typography>
         </Box>
-      </Box>
-    </Card>
-  );
-}
-
-function AddTeamCard({ onClick }: { onClick: () => void }) {
-  return (
-    <Card variant="outlined" sx={{ width: TEAM_BOX_WIDTH, height: TEAM_BOX_HEIGHT, overflow: "hidden", borderStyle: "dashed" }}>
-      <CardActionArea onClick={onClick} sx={{ height: "100%" }}>
-        <Box
-          sx={{
-            width: "100%",
-            height: "100%",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 0.5,
-            color: "text.secondary",
-          }}
-        >
-          <AddIcon fontSize="large" />
-          <Typography sx={{ fontWeight: 600 }}>Add team</Typography>
-        </Box>
       </CardActionArea>
     </Card>
   );
 }
+
+type SortOrder = "name" | "player_count";
 
 interface TeamsPageProps {
   jobs: Job[];
@@ -277,6 +269,8 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
   const [deleteTarget, setDeleteTarget] = useState<TeamEntry | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("name");
 
   const completeJobs = jobs.filter((j) => j.status === "complete");
   const completeJobIds = completeJobs.map((j) => j.id).join(",");
@@ -323,8 +317,35 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
     }
   }
 
+  const displayedTeams = (teams ?? [])
+    .filter((team) => team.name.toLowerCase().includes(search.trim().toLowerCase()))
+    .sort((a, b) => (sortOrder === "name" ? a.name.localeCompare(b.name) : b.players.length - a.players.length));
+
   return (
     <Box>
+      <PageHeader title="Teams" addLabel="Add team" onAdd={() => setDialogOpen(true)}>
+        <Stack direction="row" spacing={2} sx={{ flexWrap: "wrap" }}>
+          <TextField
+            size="small"
+            placeholder="Search teams..."
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            sx={{ minWidth: 240 }}
+          />
+          <TextField
+            select
+            size="small"
+            label="Sort by"
+            value={sortOrder}
+            onChange={(event) => setSortOrder(event.target.value as SortOrder)}
+            sx={{ minWidth: 180 }}
+          >
+            <MenuItem value="name">Name</MenuItem>
+            <MenuItem value="player_count">Player count</MenuItem>
+          </TextField>
+        </Stack>
+      </PageHeader>
+
       {teams === null ? (
         <LoadingSpinner minHeight={160} />
       ) : (
@@ -334,9 +355,11 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
               <GroupsIcon fontSize="small" /> No teams yet - group roster players together to see them here.
             </Typography>
           )}
+          {teams.length > 0 && displayedTeams.length === 0 && (
+            <Typography color="text.secondary">No teams match your search.</Typography>
+          )}
           <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
-            <AddTeamCard onClick={() => setDialogOpen(true)} />
-            {teams.map((team) => (
+            {displayedTeams.map((team) => (
               <TeamCard
                 key={team.id}
                 team={team}

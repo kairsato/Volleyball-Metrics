@@ -22,8 +22,16 @@ const PAGE_CONTENT_HEIGHT = `calc(100vh - ${APP_BAR_HEIGHT_PX + PAGE_PADDING_PX 
 // Calibration used to happen up front, before processing could even start;
 // now it's just another post-processing setup step like Player
 // Identification and Scoring Determination, reachable (and redoable) from
-// here at any time without needing to re-run anything.
-export function CourtCalibrationPage() {
+// here at any time. Unlike those two, saving here does kick off a pipeline
+// run (see CalibrationPanel.handleSave/api.recalibrateJob) - court
+// coordinates and which ball trajectory is "the ball" are re-derived from
+// already-tracked data against the new calibration, not from scratch, so
+// this is normally cheap rather than a full reprocess.
+interface CourtCalibrationPageProps {
+  onJobUpdated: (job: Job) => void;
+}
+
+export function CourtCalibrationPage({ onJobUpdated }: CourtCalibrationPageProps) {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const jobId = searchParams.get("job");
@@ -75,7 +83,16 @@ export function CourtCalibrationPage() {
       </Button>
 
       <Box sx={{ flex: 1, minHeight: 0 }}>
-        <CalibrationPanel job={job} />
+        <CalibrationPanel
+          job={job}
+          onSaved={(updated) => {
+            onJobUpdated(updated);
+            // Saving just kicked off a full re-run of phase one (see
+            // CalibrationPanel.handleSave) - the job is "processing" again,
+            // not "complete", so there's nothing left for this page to show.
+            navigate(`/video?job=${jobId}`);
+          }}
+        />
       </Box>
     </Box>
   );

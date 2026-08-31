@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
@@ -7,11 +8,9 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import { api } from "../../lib/api";
-import type { MatchupOut, ResultsOut } from "../../lib/types";
+import type { ActionQualityCategory, ActionQualityOut, ResultsOut } from "../../lib/types";
 import { LoadingSpinner } from "../LoadingSpinner";
-import { RadarChart } from "./RadarChart";
 import type { FlatEvent } from "./types";
-import { WinLossTrend } from "./WinLossTrend";
 
 const ACTION_COLORS: Record<string, string> = {
   serve: "#3b82f6",
@@ -37,6 +36,117 @@ function StatTile({ value, label }: { value: string | number; label: string }) {
   );
 }
 
+function formatPercent(value: number | null): string {
+  return value !== null ? `${Math.round(value * 100)}%` : "-";
+}
+
+function factorLabel(key: string): string {
+  return key.replace(/_/g, " ");
+}
+
+function averageFactor(category: ActionQualityCategory, key: string): number | null {
+  const values = category.instances
+    .map((instance) => instance.factors[key])
+    .filter((value): value is number => value !== null && value !== undefined);
+  return values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
+}
+
+function ScoreBar({ value }: { value: number | null }) {
+  return (
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center", flex: 1 }}>
+      <Box sx={{ flex: 1, height: 6, borderRadius: 999, bgcolor: "action.hover", overflow: "hidden" }}>
+        <Box
+          sx={{ width: `${value !== null ? value * 100 : 0}%`, height: "100%", bgcolor: "primary.main" }}
+        />
+      </Box>
+      <Typography variant="caption" color="text.secondary" sx={{ width: 34, textAlign: "right", flexShrink: 0 }}>
+        {formatPercent(value)}
+      </Typography>
+    </Stack>
+  );
+}
+
+interface QualitySectionProps {
+  title: string;
+  category: ActionQualityCategory;
+  playerNames: Record<string, string | undefined>;
+  onSeek: (timeS: number) => void;
+}
+
+// One card per action type (serve/receive/set/spike) - overall weighted
+// score up top, a breakdown of the named sub-factors it's built from (see
+// Backend/API/action_quality.py for exactly what each factor measures),
+// then whoever recorded it ranked by their own average score.
+function QualitySection({ title, category, playerNames, onSeek }: QualitySectionProps) {
+  if (category.count === 0) {
+    return (
+      <Card variant="outlined" sx={{ p: 2.5, mb: 3 }}>
+        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+          {title}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          No {title.toLowerCase()} actions detected.
+        </Typography>
+      </Card>
+    );
+  }
+
+  const players = category.players.slice().sort((a, b) => (b.average_score ?? -1) - (a.average_score ?? -1));
+
+  return (
+    <Card variant="outlined" sx={{ p: 2.5, mb: 3 }}>
+      <Stack direction="row" sx={{ alignItems: "baseline", justifyContent: "space-between", mb: 1.5 }}>
+        <Typography variant="subtitle2">{title}</Typography>
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>
+          {formatPercent(category.average_score)}
+        </Typography>
+      </Stack>
+
+      <Stack spacing={0.75} sx={{ mb: 2 }}>
+        {Object.entries(category.weights).map(([key, weight]) => (
+          <Stack key={key} direction="row" spacing={1} sx={{ alignItems: "center" }}>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ width: 150, flexShrink: 0, textTransform: "capitalize" }}
+            >
+              {factorLabel(key)} ({Math.round(weight * 100)}%)
+            </Typography>
+            <ScoreBar value={averageFactor(category, key)} />
+          </Stack>
+        ))}
+      </Stack>
+
+      <Stack spacing={0.75}>
+        {players.slice(0, 6).map((player) => {
+          const firstInstance = category.instances.find((i) => i.player_stable_id === player.stable_id);
+          return (
+            <Stack
+              key={player.stable_id}
+              direction="row"
+              sx={{ alignItems: "center", justifyContent: "space-between" }}
+            >
+              <Typography variant="body2">
+                {playerNames[String(player.stable_id)] ?? `Player ${player.stable_id}`}
+              </Typography>
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                <Typography variant="caption" color="text.secondary">
+                  {formatPercent(player.average_score)} · {player.count}
+                </Typography>
+                {firstInstance && (
+                  <Button size="small" onClick={() => onSeek(firstInstance.timestamp_s)}>
+                    Jump in
+                  </Button>
+                )}
+              </Stack>
+            </Stack>
+          );
+        })}
+      </Stack>
+    </Card>
+  );
+}
+
 interface OverallTabProps {
   results: ResultsOut;
   flatEvents: FlatEvent[];
@@ -45,22 +155,23 @@ interface OverallTabProps {
 }
 
 export function OverallTab({ results, flatEvents, onSeek, onJumpToAction }: OverallTabProps) {
-  const [matchup, setMatchup] = useState<MatchupOut | null>(null);
-  const [matchupLoading, setMatchupLoading] = useState(true);
+  const [quality, setQuality] = useState<ActionQualityOut | null>(null);
+  const [qualityLoading, setQualityLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     api
-      .getMatchup(results.job_id)
-      .then((res) => !cancelled && setMatchup(res))
+      .getActionQuality(results.job_id)
+      .then((res) => !cancelled && setQuality(res))
       .catch(() => undefined)
-      .finally(() => !cancelled && setMatchupLoading(false));
+      .finally(() => !cancelled && setQualityLoading(false));
     return () => {
       cancelled = true;
     };
   }, [results.job_id]);
 
   const playerEntries = Object.entries(results.players);
+  const playerNames = Object.fromEntries(playerEntries.map(([id, stat]) => [id, stat.name ?? undefined]));
 
   const mvp = playerEntries.slice().sort((a, b) => b[1].total_hits - a[1].total_hits)[0];
 
@@ -112,31 +223,6 @@ export function OverallTab({ results, flatEvents, onSeek, onJumpToAction }: Over
               {mvp[1].total_hits} hits across {mvp[1].rallies_participated} rallies
             </Typography>
           </Box>
-        </Card>
-      )}
-
-      {matchupLoading && (
-        <Card variant="outlined" sx={{ mb: 3 }}>
-          <LoadingSpinner minHeight={140} />
-        </Card>
-      )}
-
-      {!matchupLoading && matchup?.available && (
-        <Card variant="outlined" sx={{ p: 2.5, mb: 3 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1.5 }}>
-            Match outcome
-          </Typography>
-          <WinLossTrend matchup={matchup} />
-
-          {matchup.radar.length > 0 && <RadarChart radar={matchup.radar} />}
-        </Card>
-      )}
-
-      {!matchupLoading && matchup && !matchup.available && (
-        <Card variant="outlined" sx={{ p: 2, mb: 3, bgcolor: "action.hover" }}>
-          <Typography variant="body2" color="text.secondary">
-            Match outcome unavailable: {matchup.reason}
-          </Typography>
         </Card>
       )}
 
@@ -210,7 +296,7 @@ export function OverallTab({ results, flatEvents, onSeek, onJumpToAction }: Over
       <Typography variant="subtitle2" sx={{ mb: 1 }}>
         Leaderboard
       </Typography>
-      <Stack spacing={1}>
+      <Stack spacing={1} sx={{ mb: 3 }}>
         {leaderboard.map(([id, stat]) => {
           const firstEvent = flatEvents.find((e) => e.playerId === id);
           return (
@@ -235,6 +321,33 @@ export function OverallTab({ results, flatEvents, onSeek, onJumpToAction }: Over
         })}
         {leaderboard.length === 0 && <Typography color="text.secondary">No hit events recorded.</Typography>}
       </Stack>
+
+      <Typography variant="subtitle2" sx={{ mb: 1 }}>
+        Action quality
+      </Typography>
+
+      {qualityLoading && (
+        <Card variant="outlined" sx={{ mb: 3 }}>
+          <LoadingSpinner minHeight={140} />
+        </Card>
+      )}
+
+      {!qualityLoading && quality && (
+        <>
+          {(!quality.teams_available || !quality.height_available) && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              {!quality.teams_available &&
+                "Team splitting isn't available for this video, so placement/blocker factors below are skipped. "}
+              {!quality.height_available &&
+                "Trajectory-height factors aren't available - mark the net-top points in Court Calibration to enable them."}
+            </Alert>
+          )}
+          <QualitySection title="Serve" category={quality.serve} playerNames={playerNames} onSeek={onSeek} />
+          <QualitySection title="Receive" category={quality.receive} playerNames={playerNames} onSeek={onSeek} />
+          <QualitySection title="Set" category={quality.set} playerNames={playerNames} onSeek={onSeek} />
+          <QualitySection title="Spike" category={quality.spike} playerNames={playerNames} onSeek={onSeek} />
+        </>
+      )}
     </Box>
   );
 }

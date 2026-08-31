@@ -68,6 +68,19 @@ export interface PlayerEvent {
   timestamp_s: number;
   action_type: string;
   rally_index: number | null;
+  // Ball speed immediately before/after this touch - m/s when real_units is
+  // true, otherwise px/s (mirrors ball_speed.json's own real_units field).
+  // null when the underlying ball_speed.json reading wasn't available.
+  speed_in_m_per_s: number | null;
+  speed_out_m_per_s: number | null;
+  real_units: boolean;
+  // Estimated ball height (metres) at this touch - only ever populated when
+  // this job's calibration has a solved camera pose (see
+  // CalibrationPointsOut.camera_pose_available); null otherwise.
+  ball_height_m: number | null;
+  // Gap since the previous touch in the same rally (seconds) - null for a
+  // rally's first recorded touch.
+  time_since_prev_touch_s: number | null;
 }
 
 export interface PlayerStat {
@@ -104,9 +117,27 @@ export interface CalibrationPointsOut {
   middle_right: Point;
   far_left: Point;
   far_right: Point;
+  // The net's top edge above middle_left/middle_right - together with the
+  // 4 ground points, gives enough known-height reference points to solve
+  // the camera's full 3D pose (see net_top_calibrated/camera_pose_available
+  // below), which is what makes ball-height estimation possible at all.
+  net_top_left: Point;
+  net_top_right: Point;
   net_height_m: number;
   calibrated: boolean;
   confirmed: boolean;
+  // Whether net_top_left/net_top_right were actually dragged onto the net
+  // (vs. left at their untouched preset guess) - camera pose/ball-height
+  // estimation only ever runs once this is true.
+  net_top_calibrated: boolean;
+  // Whether a camera pose was actually solved from the 6 points - null
+  // when net_top_calibrated is false, otherwise reflects whether pose
+  // solving itself succeeded.
+  camera_pose_available: boolean | null;
+  // Mean reprojection error (pixels) of the solved camera pose - a rough
+  // confidence signal, since single-view pose recovery has no external
+  // ground truth to validate against otherwise.
+  camera_pose_reprojection_error_px: number | null;
   predicted: PredictedCourtGeometry | null;
 }
 
@@ -232,4 +263,94 @@ export interface ScoreOut {
   job_id: string;
   config: ScoreConfig;
   result: ScoreResult | null;
+}
+
+export interface ActionQualityInstance {
+  frame_idx: number;
+  timestamp_s: number;
+  rally_index: number | null;
+  player_stable_id: number | null;
+  // "A"/"B" (MatchupOut's anonymous geometric split) - null whenever team
+  // splitting is unavailable for this job, or couldn't be determined for
+  // this specific player.
+  team: "A" | "B" | null;
+  // Named 0-1 sub-scores - which keys exist depends on the action type
+  // (e.g. serve has speed/placement/trajectory_height). A factor is null
+  // when it couldn't be computed for this instance.
+  factors: Record<string, number | null>;
+  // Weighted average of `factors` - null only when every factor was
+  // unavailable.
+  overall_score: number | null;
+}
+
+export interface ActionQualityPlayer {
+  stable_id: number;
+  average_score: number | null;
+  count: number;
+}
+
+export interface ActionQualityCategory {
+  // Fixed weights this category's overall_score values were computed with -
+  // surfaced so the UI can label which factors contributed and how much.
+  weights: Record<string, number>;
+  count: number;
+  average_score: number | null;
+  players: ActionQualityPlayer[];
+  instances: ActionQualityInstance[];
+}
+
+export interface ActionQualityOut {
+  job_id: string;
+  // Whether team splitting found two well-tracked sides for this job -
+  // when false, every team-relative factor (placement, blockers) is null
+  // throughout, same "available" pattern as MatchupOut.
+  teams_available: boolean;
+  // Whether this job's calibration has a solved camera pose (net-top
+  // points marked) - when false, every trajectory-height factor is null.
+  height_available: boolean;
+  serve: ActionQualityCategory;
+  receive: ActionQualityCategory;
+  set: ActionQualityCategory;
+  spike: ActionQualityCategory;
+  caveats: string[];
+}
+
+export interface TeamPlayerSummary {
+  name: string;
+  total_hits: number;
+  hits_by_type: Record<string, number>;
+}
+
+export interface TeamVideoSummary {
+  job_id: string;
+  original_filename: string;
+  game_wins: number;
+  game_losses: number;
+}
+
+export interface TeamStatsOut {
+  team_id: string;
+  team_name: string;
+  // Every complete video with a roster member named in it contributes to
+  // total_hits/hits_by_type/players below, scored or not.
+  videos_total: number;
+  // Only videos where Scoring was configured with this team as team_x/
+  // team_y contribute to the win/loss records and radar below - see
+  // TeamStatsPage's own caveat text for why.
+  videos_with_scoring: number;
+  match_wins: number;
+  match_losses: number;
+  game_wins: number;
+  game_losses: number;
+  radar: RadarPoint[];
+  total_hits: number;
+  hits_by_type: Record<string, number>;
+  players: TeamPlayerSummary[];
+  videos: TeamVideoSummary[];
+}
+
+export interface PlayerRadarOut {
+  name: string;
+  videos_with_data: number;
+  radar: RadarPoint[];
 }

@@ -5,6 +5,7 @@ import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
+import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
@@ -53,11 +54,24 @@ function LegendLine({ color, dashed }: { color: string; dashed?: boolean }) {
   );
 }
 
-// The 4 points the user actually places, in the exact order the backend
-// expects (calibration.POINT_NAMES) - both ends of the net line, then both
-// ends of the far baseline. Everything else (the near baseline, both
-// attack lines) is predicted from these, never marked directly.
-const POINT_TITLES = ["Middle Line Left", "Middle Line Right", "Close Line Left", "Close Line Right"];
+// The 6 points the user actually places, in the exact order the backend
+// expects (calibration.POINT_NAMES plus the 2 net-top points appended) -
+// both ends of the net line, both ends of the far baseline, then the net's
+// top edge above each net-line point. Everything else (the near baseline,
+// both attack lines) is predicted from the first 4, never marked directly.
+// The last 2 (net-top) are what make ball-height estimation possible at
+// all (see CourtDefinition.court.estimate_camera_pose) - optional in the
+// sense that leaving them at their preset skips height estimation entirely
+// rather than blocking the save, but always shown so a video with a
+// visible net gets height data without a separate opt-in step.
+const POINT_TITLES = [
+  "Middle Line Left",
+  "Middle Line Right",
+  "Close Line Left",
+  "Close Line Right",
+  "Net Top Left",
+  "Net Top Right",
+];
 
 const NET_HEIGHT_OPTIONS: { value: number; label: string }[] = [
   { value: 2.43, label: "Men's / mixed (2.43m)" },
@@ -183,13 +197,26 @@ function dilateMax(src: Float32Array, w: number, h: number, radius: number): Flo
 // starting position to drag from. Chosen so the predicted near baseline
 // and both attack lines land within the visible frame for this starting
 // shape - a steeper far/close ratio pushes the predicted near baseline
-// far outside the frame before the user has even touched a point.
+// far outside the frame before the user has even touched a point. The 2
+// net-top points start directly above middle_left/middle_right
+// (NET_TOP_PRESET_OFFSET_PX higher, matching the backend constant of the
+// same name) - dragging them onto the actual net/antenna top is what
+// marks this job as having a usable camera pose (see handleSave).
+const NET_TOP_PRESET_OFFSET_PX = 120;
+
 function presetPoints(width: number, height: number): Point[] {
+  const midTop = height * 0.5;
+  const midLeftX = width * 0.26;
+  const midRightX = width * 0.74;
+  const netTopY = Math.max(0, midTop - NET_TOP_PRESET_OFFSET_PX);
+
   return [
-    { x: width * 0.26, y: height * 0.5 }, // middle_left
-    { x: width * 0.74, y: height * 0.5 }, // middle_right
+    { x: midLeftX, y: midTop }, // middle_left
+    { x: midRightX, y: midTop }, // middle_right
     { x: width * 0.29, y: height * 0.35 }, // far_left
     { x: width * 0.71, y: height * 0.35 }, // far_right
+    { x: midLeftX, y: netTopY }, // net_top_left
+    { x: midRightX, y: netTopY }, // net_top_right
   ];
 }
 
@@ -227,6 +254,10 @@ const ATTACK_NEAR_Y_FRACTION = 0.733;
 const ATTACK_NEAR_HALF_WIDTH_FRACTION = 0.356;
 const NEAR_Y_FRACTION = 0.908;
 const NEAR_HALF_WIDTH_FRACTION = 0.4375;
+// How far above the net line (ML/MR) the net-top markers sit, as a fraction
+// of the diagram's own height - purely illustrative, not to scale with a
+// real net height.
+const NET_TOP_Y_OFFSET_FRACTION = 0.16;
 
 function courtDiagramGeometry(viewW: number, viewH: number) {
   const cx = viewW / 2;
@@ -234,12 +265,17 @@ function courtDiagramGeometry(viewW: number, viewH: number) {
     left: { x: cx - viewW * halfWidthFraction, y: viewH * yFraction },
     right: { x: cx + viewW * halfWidthFraction, y: viewH * yFraction },
   });
+  const close = row(CLOSE_Y_FRACTION, CLOSE_HALF_WIDTH_FRACTION);
   return {
     far: row(FAR_Y_FRACTION, FAR_HALF_WIDTH_FRACTION),
-    close: row(CLOSE_Y_FRACTION, CLOSE_HALF_WIDTH_FRACTION),
+    close,
     attackFar: row(ATTACK_FAR_Y_FRACTION, ATTACK_FAR_HALF_WIDTH_FRACTION),
     attackNear: row(ATTACK_NEAR_Y_FRACTION, ATTACK_NEAR_HALF_WIDTH_FRACTION),
     near: row(NEAR_Y_FRACTION, NEAR_HALF_WIDTH_FRACTION),
+    netTop: {
+      left: { x: close.left.x, y: close.left.y - viewH * NET_TOP_Y_OFFSET_FRACTION },
+      right: { x: close.right.x, y: close.right.y - viewH * NET_TOP_Y_OFFSET_FRACTION },
+    },
   };
 }
 
@@ -276,6 +312,8 @@ function CourtDiagram({
     { ...g.far.right, label: "CR" },
     { ...g.close.left, label: "ML" },
     { ...g.close.right, label: "MR" },
+    { ...g.netTop.left, label: "NL" },
+    { ...g.netTop.right, label: "NR" },
   ];
 
   const rotated = rotateDeg !== 0;
@@ -336,6 +374,11 @@ function CourtDiagram({
           <line x1={g.close.left.x} y1={g.close.left.y} x2={g.close.right.x} y2={g.close.right.y} stroke="#38bdf8" strokeWidth="3" />
           <line x1={g.far.left.x} y1={g.far.left.y} x2={g.close.left.x} y2={g.close.left.y} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" />
           <line x1={g.far.right.x} y1={g.far.right.y} x2={g.close.right.x} y2={g.close.right.y} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5" />
+          {/* Marked: the net's top edge, and its two vertical edges - what
+              makes ball-height estimation possible (see estimate_camera_pose) */}
+          <line x1={g.netTop.left.x} y1={g.netTop.left.y} x2={g.netTop.right.x} y2={g.netTop.right.y} className="net-top-line" />
+          <line x1={g.close.left.x} y1={g.close.left.y} x2={g.netTop.left.x} y2={g.netTop.left.y} className="net-top-line" />
+          <line x1={g.close.right.x} y1={g.close.right.y} x2={g.netTop.right.x} y2={g.netTop.right.y} className="net-top-line" />
 
           {points.map((p) => (
             <g key={p.label}>
@@ -377,6 +420,12 @@ function CourtDiagramExample() {
           sideline.
         </Typography>
         <Typography variant="body2" color="text.secondary">
+          <strong>NL / NR</strong> - the very top of the net (or antenna) directly above ML/MR.
+          Optional, but marking these accurately is what enables height-based stats (serve/set
+          trajectory, "how low was the ball") - skip them and those stats just won't be available
+          for this video.
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
           The near baseline and both attack lines (dashed) are worked out automatically - you never
           need to find them yourself.
         </Typography>
@@ -387,9 +436,14 @@ function CourtDiagramExample() {
 
 interface CalibrationPanelProps {
   job: Job;
+  // Fired once a save has actually taken effect - see handleSave, which
+  // re-runs the pipeline rather than just writing court.json. Lets the
+  // caller (CourtCalibrationPage) refresh its own job state and navigate
+  // away to somewhere that reflects the now-"processing" status.
+  onSaved?: (job: Job) => void;
 }
 
-export function CalibrationPanel({ job }: CalibrationPanelProps) {
+export function CalibrationPanel({ job, onSaved }: CalibrationPanelProps) {
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
   const [points, setPoints] = useState<Point[] | null>(null);
@@ -400,6 +454,12 @@ export function CalibrationPanel({ job }: CalibrationPanelProps) {
   // reset itself on every reload, which meant "Redo Court Identification"
   // looked like it didn't stick as soon as you left the page.
   const [confirmed, setConfirmed] = useState(false);
+  // Whether the saved calibration currently has a usable camera pose (see
+  // CalibrationPointsOut.camera_pose_available) - purely informational,
+  // shown next to the net-height select so it's clear whether height-based
+  // stats (serve/set trajectory) will be available for this video without
+  // having to go check the Overview tab after the fact.
+  const [cameraPoseAvailable, setCameraPoseAvailable] = useState<boolean | null>(null);
   const [redoDialogOpen, setRedoDialogOpen] = useState(false);
   const [redoing, setRedoing] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -437,9 +497,17 @@ export function CalibrationPanel({ job }: CalibrationPanelProps) {
         }
         objectUrl = url;
         setFrameUrl(url);
-        setPoints([pointsRes.middle_left, pointsRes.middle_right, pointsRes.far_left, pointsRes.far_right]);
+        setPoints([
+          pointsRes.middle_left,
+          pointsRes.middle_right,
+          pointsRes.far_left,
+          pointsRes.far_right,
+          pointsRes.net_top_left,
+          pointsRes.net_top_right,
+        ]);
         setNetHeightM(pointsRes.net_height_m);
         setConfirmed(pointsRes.confirmed);
+        setCameraPoseAvailable(pointsRes.camera_pose_available);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
@@ -591,8 +659,22 @@ export function CalibrationPanel({ job }: CalibrationPanelProps) {
     setSaving(true);
     setError(null);
     try {
-      const result = await api.setCalibrationPoints(job.id, points[0], points[1], points[2], points[3], netHeightM);
+      // This page is only reachable once the job is already "complete" (see
+      // CourtCalibrationPage), meaning player/ball tracking already ran -
+      // without calibration data, or against whatever was saved before this
+      // edit. Just writing court.json here wouldn't change anything the
+      // Results page shows, since nothing re-reads it afterward - saving has
+      // to also trigger recalibrateJob, which re-picks the ball from its
+      // already-tracked candidates and re-derives player court positions
+      // against the new calibration, without re-running the expensive
+      // tracking/detection stages themselves (see jobs_router.recalibrate_job).
+      const result = await api.setCalibrationPoints(
+        job.id, points[0], points[1], points[2], points[3], points[4], points[5], netHeightM,
+      );
+      const updatedJob = await api.recalibrateJob(job.id);
       setConfirmed(result.confirmed);
+      setCameraPoseAvailable(result.camera_pose_available);
+      onSaved?.(updatedJob);
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -738,6 +820,13 @@ export function CalibrationPanel({ job }: CalibrationPanelProps) {
                   className="court-outline"
                 />
                 <line x1={points[0].x} y1={points[0].y} x2={points[1].x} y2={points[1].y} className="net-line" />
+
+                {/* Marked: net top edge, and its two vertical edges down to
+                    the net line - what makes ball-height estimation
+                    possible (see CourtDefinition.court.estimate_camera_pose) */}
+                <line x1={points[4].x} y1={points[4].y} x2={points[5].x} y2={points[5].y} className="net-top-line" />
+                <line x1={points[0].x} y1={points[0].y} x2={points[4].x} y2={points[4].y} className="net-top-line" />
+                <line x1={points[1].x} y1={points[1].y} x2={points[5].x} y2={points[5].y} className="net-top-line" />
 
                 {/* Predicted: near baseline + both attack lines */}
                 {predicted && (
@@ -897,6 +986,12 @@ export function CalibrationPanel({ job }: CalibrationPanelProps) {
                 </Typography>
               </Stack>
               <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                <LegendLine color="#aa3bff" dashed />
+                <Typography variant="body2" color="text.secondary">
+                  net top (height estimation)
+                </Typography>
+              </Stack>
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
                 <LegendLine color="rgba(0,235,160,0.85)" dashed />
                 <Typography variant="body2" color="text.secondary">
                   predicted lines
@@ -933,6 +1028,18 @@ export function CalibrationPanel({ job }: CalibrationPanelProps) {
                   ))}
                 </Select>
               </FormControl>
+
+              <Chip
+                size="small"
+                variant="outlined"
+                color={cameraPoseAvailable ? "success" : "default"}
+                label={
+                  cameraPoseAvailable
+                    ? "Height estimation available"
+                    : "Height estimation unavailable - mark NL/NR to enable"
+                }
+                sx={{ alignSelf: "flex-start" }}
+              />
 
               <Button variant="outlined" color="inherit" fullWidth disabled={locked} onClick={handleReset}>
                 Reset

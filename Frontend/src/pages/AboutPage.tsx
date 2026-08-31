@@ -1,6 +1,7 @@
 import Box from "@mui/material/Box";
 import Card from "@mui/material/Card";
 import Chip from "@mui/material/Chip";
+import Divider from "@mui/material/Divider";
 import Link from "@mui/material/Link";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
@@ -49,16 +50,38 @@ const CREDITS: CreditEntry[] = [
   },
   {
     title: "Court calibration & homography",
-    what: "Pixel-to-court coordinate mapping from four user-clicked corners plus net points - original to this project.",
+    what:
+      "Pixel-to-court coordinate mapping from four user-clicked corners, plus a single-view camera pose " +
+      "solved from two net-top points (for ball/action height estimation) - original to this project.",
     source: "Original to this project",
     license: "N/A",
   },
 ];
 
-export function CreditsPage() {
+export function AboutPage() {
   return (
     <Box sx={{ maxWidth: 860 }}>
+      <Typography variant="h4" sx={{ fontWeight: 700, mb: 2 }}>
+        About
+      </Typography>
+      <Typography color="text.secondary" sx={{ mb: 1.5 }}>
+        Volleyball Metrics turns a raw match recording into player stats, team analytics, rally breakdowns, and an
+        annotated video. Calibrate the court once, and the pipeline tracks every player and the ball, segments the
+        match into rallies, classifies each touch (serve/set/spike/dig/block), and rolls all of that up into
+        per-player and per-team stats and a rendered copy of the video with tracking overlays.
+      </Typography>
       <Typography color="text.secondary" sx={{ mb: 4 }}>
+        Named teams (Teams page) and match Scoring (manual, automatic, or scoreboard OCR - set up from a video's
+        Setup tab) are optional add-ons on top of that: configure them to unlock win/loss records and win-rate
+        radars on the Teams and Players pages, not just the per-video Results page.
+      </Typography>
+
+      <Divider sx={{ mb: 4 }} />
+
+      <Typography variant="h5" sx={{ fontWeight: 700, mb: 1 }}>
+        Credits
+      </Typography>
+      <Typography color="text.secondary" sx={{ mb: 3 }}>
         This app combines several detection and classification models, some trained for this project and some
         fine-tuned or adapted from open-source work. Attribution and license terms for each below.
       </Typography>

@@ -482,6 +482,109 @@ def create_half_court_homography(middle_left, middle_right, far_left, far_right)
     return cv2.getPerspectiveTransform(source_points, HALF_COURT_DESTINATION)
 
 
+# ============================================================
+# CAMERA POSE (adds net_top_left/net_top_right for ball-height estimation)
+# ============================================================
+#
+# create_half_court_homography above only ever solves a flat pixel<->ground
+# -plane mapping - it has no notion of "up" at all, so it can never tell an
+# airborne ball's height above the court, only where it is horizontally.
+# Recovering height needs the camera's actual 3D pose (where it sits and how
+# it's oriented, not just a 2D warp), which needs at least one 3D reference
+# point that ISN'T on the ground plane - the net's top edge, at the known
+# height NET_HEIGHT_OPTIONS/net_height_m, is exactly that: together with the
+# 4 ground corners it gives 6 known-3D-position <-> marked-pixel
+# correspondences, spanning two different heights rather than lying flat on
+# one plane.
+#
+# There's no real (multi-image) camera calibration here, so the focal
+# length is unknown - only the principal point is assumed (image centre, a
+# standard simplification absent an actual calibration target). With 6
+# correspondences instead of the bare minimum 4, a plain 1D search over
+# candidate focal lengths - solving cv2.solvePnP at each and keeping whichever
+# minimizes reprojection error - is well-constrained enough to produce a
+# usable (if approximate) pose. This is meaningfully weaker than a real
+# multi-image calibration (there is a well-known focal-length/distance
+# ambiguity in single-view pose recovery), so treat the result as an
+# estimate: see CAMERA_POSE_MAX_REPROJECTION_ERROR_PX below for the
+# confidence signal callers should surface, and BALL_HEIGHT_MAX_PLAUSIBLE_M
+# in ballDetection.py for the sanity clamp on anything derived from it.
+
+# Candidate focal lengths tried, as a fraction of the frame's own width -
+# corresponds to roughly a 15-70 degree horizontal field of view for a
+# typical court-side camera/phone, comfortably covering both a tight
+# telephoto shot from the stands and a wide-angle courtside mount.
+_FOCAL_LENGTH_SEARCH_FRACTIONS = np.linspace(0.5, 3.0, 60)
+
+
+def estimate_camera_pose(
+    middle_left, middle_right, far_left, far_right,
+    net_top_left, net_top_right, net_height_m,
+    frame_width, frame_height,
+):
+    """
+    Recovers the camera's 3D pose (intrinsics + extrinsics) from the 6
+    marked calibration points, by searching over candidate focal lengths and
+    keeping whichever gives the lowest reprojection error against a
+    cv2.solvePnP solve - see the module comment above for why this is
+    needed and its limits.
+
+    Returns (K, rvec, tvec, reprojection_error_px), or None if no candidate
+    focal length produced a valid solvePnP solution at all (e.g. degenerate/
+    near-identical marked points).
+    """
+    world_points = np.array([
+        [COURT_LENGTH / 2, 0.0, 0.0],             # middle_left
+        [COURT_LENGTH / 2, COURT_WIDTH, 0.0],     # middle_right
+        [COURT_LENGTH, 0.0, 0.0],                 # far_left
+        [COURT_LENGTH, COURT_WIDTH, 0.0],         # far_right
+        [COURT_LENGTH / 2, 0.0, net_height_m],    # net_top_left
+        [COURT_LENGTH / 2, COURT_WIDTH, net_height_m],  # net_top_right
+    ], dtype=np.float64)
+
+    image_points = np.array([
+        middle_left, middle_right, far_left, far_right, net_top_left, net_top_right,
+    ], dtype=np.float64)
+
+    principal_point = (frame_width / 2.0, frame_height / 2.0)
+
+    best = None
+    for focal_fraction in _FOCAL_LENGTH_SEARCH_FRACTIONS:
+        focal_px = float(focal_fraction * frame_width)
+        K = np.array([
+            [focal_px, 0.0, principal_point[0]],
+            [0.0, focal_px, principal_point[1]],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+
+        success, rvec, tvec = cv2.solvePnP(
+            world_points, image_points, K, None, flags=cv2.SOLVEPNP_ITERATIVE
+        )
+        if not success:
+            continue
+
+        reprojected, _ = cv2.projectPoints(world_points, rvec, tvec, K, None)
+        error_px = float(np.linalg.norm(reprojected.reshape(-1, 2) - image_points, axis=1).mean())
+
+        if best is None or error_px < best[3]:
+            best = (K, rvec, tvec, error_px)
+
+    return best
+
+
+def world_to_camera(point_world, rvec, tvec):
+    """P_cam = R @ P_world + tvec - the extrinsic transform solvePnP solves
+    for, world metres -> camera-space metres."""
+    rotation, _ = cv2.Rodrigues(rvec)
+    return rotation @ np.asarray(point_world, dtype=np.float64) + tvec.reshape(3)
+
+
+def camera_to_world(point_camera, rvec, tvec):
+    """Inverse of world_to_camera: P_world = R^T @ (P_cam - tvec)."""
+    rotation, _ = cv2.Rodrigues(rvec)
+    return rotation.T @ (np.asarray(point_camera, dtype=np.float64) - tvec.reshape(3))
+
+
 def predict_court_geometry(matrix):
     """Everything else on the court, derived purely from the homography
     above and the court's known real dimensions - never marked by the user.

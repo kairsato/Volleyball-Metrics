@@ -5,6 +5,7 @@ from . import config, score
 from .routers import (
     calibration_router,
     jobs_router,
+    player_stats_router,
     players_router,
     results_router,
     roster_router,
@@ -17,6 +18,7 @@ app = FastAPI(title="Volleyball Video Analytics API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
+    allow_origin_regex=config.CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -25,6 +27,7 @@ app.add_middleware(
 app.include_router(jobs_router.router)
 app.include_router(calibration_router.router)
 app.include_router(players_router.router)
+app.include_router(player_stats_router.router)
 app.include_router(results_router.router)
 app.include_router(roster_router.router)
 app.include_router(team_roster_router.router)

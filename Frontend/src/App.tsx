@@ -29,14 +29,15 @@ import {
   useNavigate,
   useSearchParams,
 } from "react-router-dom";
+import { AboutPage } from "./pages/AboutPage";
 import { CourtCalibrationPage } from "./pages/CourtCalibrationPage";
-import { CreditsPage } from "./pages/CreditsPage";
 import { HomePage } from "./pages/HomePage";
 import { PlayerIdentificationPage } from "./pages/PlayerIdentificationPage";
 import { PlayersPage } from "./pages/PlayersPage";
 import { PlayerStatsPage } from "./pages/PlayerStatsPage";
 import { ScoringDeterminationPage } from "./pages/ScoringDeterminationPage";
 import { TeamsPage } from "./pages/TeamsPage";
+import { TeamStatsPage } from "./pages/TeamStatsPage";
 import { VideoPage } from "./pages/VideoPage";
 import { VideosPage } from "./pages/VideosPage";
 import { UploadPanel } from "./components/UploadPanel";
@@ -85,7 +86,7 @@ const NAV_ITEMS = [
   { label: "Videos", to: "/videos" },
   { label: "Players", to: "/players" },
   { label: "Teams", to: "/teams" },
-  { label: "Credits", to: "/credits" },
+  { label: "About", to: "/about" },
 ];
 
 // The Setup page used to be a standalone /video/setup?job=&tab=<name> route
@@ -219,19 +220,24 @@ function AppContent() {
           <Route path="/players" element={<PlayersPage jobs={jobs} />} />
           <Route path="/player" element={<PlayerStatsPage jobs={jobs} />} />
           <Route path="/teams" element={<TeamsPage jobs={jobs} />} />
-          <Route path="/credits" element={<CreditsPage />} />
+          <Route path="/team" element={<TeamStatsPage />} />
+          <Route path="/about" element={<AboutPage />} />
           <Route path="/video" element={<VideoPage onJobUpdated={handleJobUpdated} />} />
           <Route path="/video/setup" element={<LegacySetupRedirect />} />
-          <Route path="/video/setup/court-calibration" element={<CourtCalibrationPage />} />
+          <Route
+            path="/video/setup/court-calibration"
+            element={<CourtCalibrationPage onJobUpdated={handleJobUpdated} />}
+          />
           <Route
             path="/video/setup/player-identification"
             element={<PlayerIdentificationPage onJobUpdated={handleJobUpdated} />}
           />
           <Route path="/video/setup/scoring-determination" element={<ScoringDeterminationPage />} />
-          {/* Old routes from before Playlist/Results were renamed to Videos, and Stats to Players - redirect rather than 404 in case anything still links here. */}
+          {/* Old routes from before Playlist/Results were renamed to Videos, Stats to Players, and Credits to About - redirect rather than 404 in case anything still links here. */}
           <Route path="/playlist" element={<Navigate to="/videos" replace />} />
           <Route path="/results" element={<Navigate to={`/video${location.search}`} replace />} />
           <Route path="/stats" element={<Navigate to="/players" replace />} />
+          <Route path="/credits" element={<Navigate to="/about" replace />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </Box>

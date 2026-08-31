@@ -97,7 +97,18 @@ def consolidateStats(output_path, actions_filename=ACTIONS_LOG_NAME):
             "frame_idx": action["frame_idx"],
             "timestamp_s": action["timestamp_s"],
             "action_type": action_type,
-            "rally_index": rally_index
+            "rally_index": rally_index,
+            # .get(...) rather than direct indexing - actions_filename can
+            # point at actions_grouped.json (see write_grouped_actions),
+            # which only remaps player_stable_id/drops ignored players and
+            # otherwise copies actions.json's records verbatim, so these are
+            # always present there too; .get keeps this tolerant of a stale
+            # actions.json from before these fields existed.
+            "speed_in_m_per_s": action.get("speed_in_m_per_s"),
+            "speed_out_m_per_s": action.get("speed_out_m_per_s"),
+            "real_units": action.get("real_units", False),
+            "ball_height_m": action.get("ball_height_m"),
+            "time_since_prev_touch_s": action.get("time_since_prev_touch_s"),
         })
 
     output = {"players": {}, "caveats": CAVEATS}

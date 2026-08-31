@@ -156,12 +156,22 @@ def _find_hits(ball_entries, fps):
         is_speed_change = speed_ratio >= HIT_SPEED_RATIO_THRESHOLD
 
         if is_direction_change or is_speed_change:
+            # A hit's in/out speed is only trustworthy as a real-world m/s
+            # reading when BOTH endpoints on that side had a court position
+            # to compute it from - otherwise _velocity silently fell back to
+            # pixel space, same "real_units" idea ball_speed.json's own
+            # per-point readings already use.
+            real_units_in = prev["court"] is not None and curr["court"] is not None
+            real_units_out = curr["court"] is not None and nxt["court"] is not None
             hits.append({
                 "frame_idx": curr["frame_idx"],
                 "pixel": curr["pixel"],
                 "court": curr["court"],
+                "height_m": curr.get("height_m"),
                 "speed_in_ms_or_pxs": float(speed_in),
                 "speed_out_ms_or_pxs": float(speed_out),
+                "speed_in_real_units": real_units_in,
+                "speed_out_real_units": real_units_out,
                 "angle_change_deg": angle
             })
 
@@ -319,6 +329,14 @@ def detectActions(video_path, output_path):
         frame_players = _players_near_frame(players_by_frame, hit["frame_idx"]) or []
         player_id = _nearest_player(frame_players, hit["pixel"], hit["court"], diagonal)
 
+        # A hit's in/out speed is only exposed in real units (m/s) when both
+        # sides of it were - never a mix of one real reading and one pixel
+        # reading masquerading as the same unit. See _find_hits above.
+        real_units = hit["speed_in_real_units"] and hit["speed_out_real_units"]
+        time_since_prev_touch_s = (
+            (hit["frame_idx"] - prev_hit["frame_idx"]) / fps if prev_hit is not None else None
+        )
+
         actions.append({
             "frame_idx": hit["frame_idx"],
             "timestamp_s": hit["frame_idx"] / fps,
@@ -326,7 +344,12 @@ def detectActions(video_path, output_path):
             "player_stable_id": player_id,
             "action_type": action_type,
             "ball_pixel": hit["pixel"],
-            "ball_court": hit["court"]
+            "ball_court": hit["court"],
+            "ball_height_m": hit["height_m"],
+            "speed_in_m_per_s": hit["speed_in_ms_or_pxs"] if real_units else None,
+            "speed_out_m_per_s": hit["speed_out_ms_or_pxs"] if real_units else None,
+            "real_units": real_units,
+            "time_since_prev_touch_s": time_since_prev_touch_s,
         })
 
     actions_file = Path(output_path) / ACTIONS_LOG_NAME

@@ -4,9 +4,9 @@ import mimetypes
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
-from .. import calibration, config, teams
+from .. import action_quality, calibration, config, teams
 from ..jobs import store
-from ..schemas import MatchupOut, RallyOut, ResultsOut
+from ..schemas import ActionQualityOut, MatchupOut, RallyOut, ResultsOut
 
 router = APIRouter(prefix="/api/jobs/{job_id}", tags=["results"])
 
@@ -24,10 +24,18 @@ async def get_thumbnail(job_id: str):
     if video_file is None:
         raise HTTPException(status_code=404, detail="No uploaded video found for this job")
 
+    # Reuses the calibration frame grab, aimed at the middle of the video
+    # rather than frame 0 - frame 0 is very often a black/loading/warm-up
+    # frame with no play visible at all, which made every thumbnail before
+    # the game actually started look the same. Falls back to frame 0 (the
+    # calibration frame grab's own default) if duration can't be read for
+    # some reason, same as before this change.
+    timestamp_s = calibration.video_duration_s(video_file)
     try:
-        # Reuses the calibration frame grab - it's just "frame 0, JPEG
-        # encoded" and works regardless of the job's calibration state.
-        jpeg_bytes, _, _ = calibration.read_calibration_frame(video_file)
+        if timestamp_s is not None:
+            jpeg_bytes, _, _ = calibration.read_calibration_frame(video_file, timestamp_s=timestamp_s / 2)
+        else:
+            jpeg_bytes, _, _ = calibration.read_calibration_frame(video_file)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -73,6 +81,19 @@ async def get_matchup(job_id: str):
 
     matchup = teams.build_matchup(output_path)
     return MatchupOut(job_id=job_id, **matchup)
+
+
+@router.get("/action-quality", response_model=ActionQualityOut)
+async def get_action_quality(job_id: str):
+    _require_job(job_id)
+
+    output_path = config.output_dir(job_id)
+    stats_file = output_path / config.STATS_FILE_NAME
+    if not stats_file.exists():
+        raise HTTPException(status_code=409, detail="Job hasn't finalized yet - consolidate first.")
+
+    result = action_quality.compute_action_quality(job_id, output_path)
+    return ActionQualityOut(**result)
 
 
 @router.get("/dashboard")

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+import numpy as np
 
 from . import config
 
@@ -17,6 +18,12 @@ PLAYER_CONFIG_NAME = "player_config.json"
 
 THUMBNAIL_MAX_DIM = 220
 JPEG_QUALITY = 85
+# Bumped whenever a change would make an already-cached thumbnail wrong even
+# though its frame_idx hasn't changed (e.g. adding the "outline other people
+# in frame" overlay below) - a cache entry stamped with an older version is
+# treated as a miss and regenerated once, rather than serving a stale
+# thumbnail indefinitely.
+THUMBNAIL_CACHE_VERSION = 2
 
 # A detector's box is often a touch tight around the actual person - pad it
 # outward proportionally (same fraction for everyone, so crops stay
@@ -119,16 +126,20 @@ def _best_crop_per_player(positions: list[dict], frame_size: Optional[tuple[floa
 
 
 def _extract_crop(video_path: Path, frame_idx: int, box: list[float]):
-    """The padded, raw BGR crop around box at frame_idx, or None if the
-    frame/box is unusable - shared by _extract_thumbnail (which additionally
-    resizes and JPEG-encodes it for the UI) and embed_player (which wants
-    the raw pixels for the appearance encoder, not a re-decoded JPEG)."""
+    """The padded, raw BGR crop around box at frame_idx, plus its top-left
+    corner in the original frame's own pixel coordinates (so a caller can
+    translate some other detection's box into crop-local coordinates - see
+    _outline_other_people) - or (None, None) if the frame/box is unusable.
+    Shared by _extract_thumbnail (which additionally resizes, outlines any
+    other person caught in the same frame, and JPEG-encodes it for the UI)
+    and embed_player/auto_identify_from_gallery (which want the raw pixels
+    for the appearance encoder, not a re-decoded/annotated JPEG)."""
     cap = cv2.VideoCapture(str(video_path))
     try:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         success, frame = cap.read()
         if not success:
-            return None
+            return None, None
 
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = box
@@ -137,21 +148,76 @@ def _extract_crop(video_path: Path, frame_idx: int, box: list[float]):
         x1, y1 = max(0, int(x1 - pad_x)), max(0, int(y1 - pad_y))
         x2, y2 = min(w, int(x2 + pad_x)), min(h, int(y2 + pad_y))
         if x2 <= x1 or y2 <= y1:
-            return None
+            return None, None
 
-        return frame[y1:y2, x1:x2]
+        return frame[y1:y2, x1:x2], (x1, y1)
     finally:
         cap.release()
 
 
-def _extract_thumbnail(video_path: Path, frame_idx: int, box: list[float]) -> Optional[str]:
-    crop = _extract_crop(video_path, frame_idx, box)
+# Colours (BGR) for outlining a second detected person inside a thumbnail
+# crop - a dark rectangle drawn first, then a white one on top at the same
+# coordinates, so the visible edge reads as a white rectangle with a darker
+# outline that stays visible against any background (a light court floor, a
+# dark jersey, etc.) rather than blending into whichever it's drawn over.
+OTHER_PERSON_OUTLINE_COLOR = (20, 20, 20)
+OTHER_PERSON_FILL_COLOR = (255, 255, 255)
+OTHER_PERSON_OUTLINE_THICKNESS = 4
+OTHER_PERSON_INNER_THICKNESS = 2
+
+# Below this many pixels of a second person's box actually landing inside
+# the crop (post-resize), outlining them isn't worth it - a sliver of
+# someone at the very edge of the padded crop is more visual noise than a
+# useful "someone else is here too" signal.
+OTHER_PERSON_MIN_VISIBLE_PX = 4
+
+
+def _outline_other_people(
+    crop, frame_players: list[dict], primary_stable_id: int, offset: tuple[int, int], scale: float,
+) -> None:
+    """Draws a white/dark-outlined rectangle (see OTHER_PERSON_* above)
+    around every OTHER detected person whose box overlaps this thumbnail
+    crop, so a human naming/reviewing primary_stable_id can tell at a glance
+    that a second person caught in the same frame isn't the one being
+    identified. Mutates `crop` in place."""
+    ox, oy = offset
+    crop_h, crop_w = crop.shape[:2]
+
+    for player in frame_players:
+        if player["stable_id"] == primary_stable_id:
+            continue
+
+        x1, y1, x2, y2 = player["box"]
+        lx1, ly1 = (x1 - ox) * scale, (y1 - oy) * scale
+        lx2, ly2 = (x2 - ox) * scale, (y2 - oy) * scale
+
+        cx1, cy1 = max(0.0, lx1), max(0.0, ly1)
+        cx2, cy2 = min(float(crop_w), lx2), min(float(crop_h), ly2)
+        if cx2 - cx1 < OTHER_PERSON_MIN_VISIBLE_PX or cy2 - cy1 < OTHER_PERSON_MIN_VISIBLE_PX:
+            continue
+
+        p1, p2 = (int(cx1), int(cy1)), (int(cx2), int(cy2))
+        cv2.rectangle(crop, p1, p2, OTHER_PERSON_OUTLINE_COLOR, OTHER_PERSON_OUTLINE_THICKNESS)
+        cv2.rectangle(crop, p1, p2, OTHER_PERSON_FILL_COLOR, OTHER_PERSON_INNER_THICKNESS)
+
+
+def _extract_thumbnail(
+    video_path: Path, frame_idx: int, box: list[float], stable_id: int, frame_players: list[dict],
+) -> Optional[str]:
+    crop, offset = _extract_crop(video_path, frame_idx, box)
     if crop is None:
         return None
+    # frame[y1:y2, x1:x2] is a view into the decoded frame, not its own
+    # array - draw on a copy rather than risk mutating/relying on that.
+    crop = crop.copy()
 
     scale = THUMBNAIL_MAX_DIM / max(crop.shape[0], crop.shape[1])
     if scale < 1.0:
         crop = cv2.resize(crop, (int(crop.shape[1] * scale), int(crop.shape[0] * scale)))
+    else:
+        scale = 1.0
+
+    _outline_other_people(crop, frame_players, stable_id, offset, scale)
 
     ok, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     if not ok:
@@ -196,6 +262,111 @@ def save_ignored(output_path: Path, ignored: set[int]) -> list[int]:
     return result
 
 
+# Standard court dimensions (CourtDefinition.court.COURT_LENGTH/COURT_WIDTH)
+# - duplicated here rather than cross-imported, matching how ballDetection.py
+# keeps its own copy of court.json's schema instead of reaching into the
+# Analysis package.
+_COURT_LENGTH_M = 18.0
+_COURT_WIDTH_M = 9.0
+
+# How far outside the marked court lines a player's foot position can still
+# land and count as "on the court" for recalibrate_players - generous, since
+# a real dig/dive routinely lands a step or two past the sideline or
+# baseline. A stable_id whose foot position NEVER falls within this margin
+# across the whole video is almost certainly not a player at all (bench,
+# staff, a spectator), not a player who just played close to the edge.
+PLAYER_COURT_MARGIN_M = 3.0
+
+
+def _load_homography(output_path: Path):
+    court_file = output_path / config.COURT_FILE_NAME
+    if not court_file.exists():
+        return None
+    try:
+        data = json.loads(court_file.read_text())
+        return np.array(data["homography"], dtype=np.float64)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def _pixel_to_court(x: float, y: float, matrix) -> tuple[float, float]:
+    point = np.array([[[x, y]]], dtype=np.float64)
+    transformed = cv2.perspectiveTransform(point, matrix)
+    return float(transformed[0][0][0]), float(transformed[0][0][1])
+
+
+def recalibrate_players(output_path: Path) -> int:
+    """
+    Re-derives player_positions.json's `court` field (each frame's box-centre
+    projected through the homography, same as tracker_offline.py's own phase
+    3) from whatever court.json says *now*, and auto-ignores any stable_id
+    that was never once inside the (generously padded) court area for the
+    whole video - almost always bench/staff/a spectator the detector picked
+    up, not a real player. Cheap: pure JSON in/out, no video decode or
+    re-detection, since tracker_offline.py already tracks and keeps everyone
+    regardless of position (see its load_court_polygon docstring) - only
+    which stable_ids count as "on the court" changes when calibration does.
+
+    Never un-ignores anyone a human already ignored manually, and never
+    ignores a stable_id that spends even one frame plausibly on the court -
+    a real player diving, chasing a wide ball, or just standing near a line
+    should never be silently hidden; that's still a human call via the Setup
+    tab's Player Identification page.
+
+    Returns how many stable_ids were newly auto-ignored.
+    """
+    positions_file = output_path / PLAYER_POSITIONS_NAME
+    if not positions_file.exists():
+        return 0
+
+    matrix = _load_homography(output_path)
+    positions = json.loads(positions_file.read_text())
+
+    ever_seen: set[int] = set()
+    ever_in_range: set[int] = set()
+
+    for entry in positions:
+        for player in entry["players"]:
+            stable_id = player["stable_id"]
+            ever_seen.add(stable_id)
+
+            x1, y1, x2, y2 = player["box"]
+            cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+            court = _pixel_to_court(cx, cy, matrix) if matrix is not None else None
+            player["court"] = list(court) if court is not None else None
+
+            if matrix is None:
+                # No calibration at all - can't judge range, so don't
+                # auto-ignore anyone; err toward leaving it to a human.
+                ever_in_range.add(stable_id)
+                continue
+
+            # The range check itself uses a foot point (bottom-centre)
+            # rather than the box centre stored above - a standing player's
+            # foot is much closer to the calibrated ground plane, so it
+            # doesn't systematically read as "off court" the way an
+            # elevated box-centre would for someone just standing normally
+            # in-bounds (see CourtDefinition.BallDetection.ballDetection.
+            # pixel_to_court's own docstring on this same elevation bias).
+            fx, fy = _pixel_to_court((x1 + x2) / 2.0, y2, matrix)
+            if -PLAYER_COURT_MARGIN_M <= fx <= _COURT_LENGTH_M + PLAYER_COURT_MARGIN_M and \
+                    -PLAYER_COURT_MARGIN_M <= fy <= _COURT_WIDTH_M + PLAYER_COURT_MARGIN_M:
+                ever_in_range.add(stable_id)
+
+    positions_file.write_text(json.dumps(positions, indent=2))
+
+    never_in_range = ever_seen - ever_in_range
+    if not never_in_range:
+        return 0
+
+    ignored = load_ignored(output_path)
+    newly_ignored = never_in_range - ignored
+    if newly_ignored:
+        save_ignored(output_path, ignored | newly_ignored)
+
+    return len(newly_ignored)
+
+
 def load_player_confirmed(output_path: Path) -> bool:
     """Whether the user has explicitly signed off on this video's player
     identification - same state-management pattern as scoring's
@@ -236,6 +407,10 @@ def list_players(video_path: Path, output_path: Path, with_thumbnails: bool = Tr
     best = _best_crop_per_player(positions, _frame_size(video_path))
     names = load_names(output_path)
     ignored = load_ignored(output_path)
+    # Every player detected in a given frame, for _outline_other_people -
+    # lets a thumbnail mark up any second person who happened to be caught
+    # in the same frame as the one actually being shown.
+    players_by_frame = {entry["frame_idx"]: entry["players"] for entry in positions}
 
     # Extracting a thumbnail means opening the video and seeking to a
     # specific frame - the single slowest part of this endpoint, and one
@@ -254,11 +429,22 @@ def list_players(video_path: Path, output_path: Path, with_thumbnails: bool = Tr
         if with_thumbnails:
             cache_key = str(stable_id)
             cached = cache.get(cache_key)
-            if cached is not None and cached.get("frame_idx") == record["frame_idx"]:
+            if (
+                cached is not None
+                and cached.get("frame_idx") == record["frame_idx"]
+                and cached.get("v") == THUMBNAIL_CACHE_VERSION
+            ):
                 thumbnail = cached["thumbnail_base64"]
             else:
-                thumbnail = _extract_thumbnail(video_path, record["frame_idx"], record["box"])
-                cache[cache_key] = {"thumbnail_base64": thumbnail, "frame_idx": record["frame_idx"]}
+                frame_players = players_by_frame.get(record["frame_idx"], [])
+                thumbnail = _extract_thumbnail(
+                    video_path, record["frame_idx"], record["box"], stable_id, frame_players
+                )
+                cache[cache_key] = {
+                    "thumbnail_base64": thumbnail,
+                    "frame_idx": record["frame_idx"],
+                    "v": THUMBNAIL_CACHE_VERSION,
+                }
                 cache_dirty = True
 
         players.append({
@@ -289,7 +475,7 @@ def embed_player(video_path: Path, output_path: Path, stable_id: int) -> Optiona
     if record is None:
         return None
 
-    crop = _extract_crop(video_path, record["frame_idx"], record["box"])
+    crop, _offset = _extract_crop(video_path, record["frame_idx"], record["box"])
     if crop is None:
         return None
 
@@ -324,7 +510,7 @@ def auto_identify_from_gallery(video_path: Path, output_path: Path) -> int:
     for stable_id, record in best.items():
         if stable_id in ignored or names.get(str(stable_id)):
             continue
-        crop = _extract_crop(video_path, record["frame_idx"], record["box"])
+        crop, _offset = _extract_crop(video_path, record["frame_idx"], record["box"])
         if crop is None:
             continue
         embedding = player_gallery.embed_crop(crop)

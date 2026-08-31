@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
@@ -7,13 +7,15 @@ import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
+import MenuItem from "@mui/material/MenuItem";
+import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import AddIcon from "@mui/icons-material/Add";
 import { Link as RouterLink } from "react-router-dom";
 import { api } from "../lib/api";
-import type { Job } from "../lib/types";
+import type { Job, TeamEntry } from "../lib/types";
 import { LoadingSpinner } from "../components/LoadingSpinner";
+import { PageHeader } from "../components/PageHeader";
 import { PlayerPhotoCarousel } from "../components/PlayerPhotoCarousel";
 
 interface IdentifiedPlayer {
@@ -100,33 +102,6 @@ function IdentifiedPlayerCard({ player }: { player: IdentifiedPlayer }) {
   );
 }
 
-// A tile in the grid itself (always first), mirroring how VideoGrid does
-// "add video" - adding a player reads as just another item in the same
-// list instead of a separate button floating above it.
-function AddPlayerCard({ onClick }: { onClick: () => void }) {
-  return (
-    <Card variant="outlined" sx={{ width: PLAYER_TILE_WIDTH, height: PLAYER_TILE_HEIGHT, overflow: "hidden", borderStyle: "dashed" }}>
-      <CardActionArea onClick={onClick} sx={{ height: "100%" }}>
-        <Box
-          sx={{
-            width: "100%",
-            height: "100%",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 0.5,
-            color: "text.secondary",
-          }}
-        >
-          <AddIcon fontSize="large" />
-          <Typography sx={{ fontWeight: 600 }}>Add player</Typography>
-        </Box>
-      </CardActionArea>
-    </Card>
-  );
-}
-
 function AddPlayerDialog({
   open,
   onClose,
@@ -201,7 +176,10 @@ interface PlayersPageProps {
 export function PlayersPage({ jobs }: PlayersPageProps) {
   const [players, setPlayers] = useState<IdentifiedPlayer[] | null>(null);
   const [roster, setRoster] = useState<string[]>([]);
+  const [teams, setTeams] = useState<TeamEntry[]>([]);
   const [addPlayerOpen, setAddPlayerOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [teamFilter, setTeamFilter] = useState<string>("all");
 
   const completeJobs = jobs.filter((j) => j.status === "complete");
   const completeJobIds = completeJobs.map((j) => j.id).join(",");
@@ -228,13 +206,17 @@ export function PlayersPage({ jobs }: PlayersPageProps) {
       .getRoster()
       .then((res) => setRoster(res.players))
       .catch(() => undefined);
+    api
+      .getTeams()
+      .then((res) => setTeams(res.teams))
+      .catch(() => undefined);
   }, []);
 
   // Every roster name gets a card, whether or not it has stats yet - a
   // name added to the roster (or typed while naming someone on a video,
   // which adds it here too) but not yet attached to any finalized video
   // shows up as a zero-stat placeholder rather than not appearing at all.
-  const displayedPlayers: IdentifiedPlayer[] = players
+  const allPlayers: IdentifiedPlayer[] = players
     ? [
         ...players,
         ...roster
@@ -243,6 +225,20 @@ export function PlayersPage({ jobs }: PlayersPageProps) {
       ]
     : [];
 
+  const selectedTeam = teams.find((t) => t.id === teamFilter);
+  const displayedPlayers = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return allPlayers.filter(
+      (player) =>
+        (query === "" || player.name.toLowerCase().includes(query)) &&
+        (teamFilter === "all" || (selectedTeam?.players.includes(player.name) ?? false)),
+    );
+    // allPlayers is rebuilt every render from `players`/`roster` - depend on
+    // those directly instead so this doesn't recompute on every keystroke's
+    // unrelated re-render for no reason.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [players, roster, search, teamFilter, selectedTeam]);
+
   async function handleAddToRoster(name: string) {
     const res = await api.addToRoster(name);
     setRoster(res.players);
@@ -250,11 +246,39 @@ export function PlayersPage({ jobs }: PlayersPageProps) {
 
   return (
     <Box>
+      <PageHeader title="Players" addLabel="Add player" onAdd={() => setAddPlayerOpen(true)}>
+        <Stack direction="row" spacing={2} sx={{ flexWrap: "wrap" }}>
+          <TextField
+            size="small"
+            placeholder="Search players..."
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            sx={{ minWidth: 240 }}
+          />
+          <TextField
+            select
+            size="small"
+            label="Team"
+            value={teamFilter}
+            onChange={(event) => setTeamFilter(event.target.value)}
+            sx={{ minWidth: 180 }}
+          >
+            <MenuItem value="all">All players</MenuItem>
+            {teams.map((team) => (
+              <MenuItem key={team.id} value={team.id}>
+                {team.name}
+              </MenuItem>
+            ))}
+          </TextField>
+        </Stack>
+      </PageHeader>
+
       {players === null ? (
         <LoadingSpinner minHeight={160} />
+      ) : displayedPlayers.length === 0 ? (
+        <Typography color="text.secondary">No players match your search/filter.</Typography>
       ) : (
         <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
-          <AddPlayerCard onClick={() => setAddPlayerOpen(true)} />
           {displayedPlayers.map((player) => (
             <IdentifiedPlayerCard key={player.name} player={player} />
           ))}

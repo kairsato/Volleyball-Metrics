@@ -14,6 +14,11 @@ export const STAGE_LABELS: Record<string, string> = {
   ball_detection: "Ball detection",
   game_status: "Game status detection",
   action_detection: "Action detection",
+  // Only ever runs as part of a calibration change on an already-complete
+  // job (see CalibrationPanel.handleSave/api.recalibrateJob) - re-derives
+  // ball/player court positions from already-tracked data against the new
+  // calibration, so it's not one of PHASE_ONE_STAGES/PHASE_TWO_STAGES.
+  recalibrate: "Applying new calibration",
   consolidating: "Consolidating stats",
   dashboard: "Generating dashboard",
   rendering: "Rendering annotated video",

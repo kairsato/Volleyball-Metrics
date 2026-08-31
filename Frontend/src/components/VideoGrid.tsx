@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -59,6 +59,107 @@ interface VideoGridProps {
   onDeleteJob?: (jobId: string) => void;
   /** Omit to leave out the "add video" tile entirely. */
   onAddVideo?: () => void;
+  /** Whether "add video" renders as a dashed tile inside the grid itself
+   * (the original pattern - still what HomePage's preview strip wants) or
+   * is left out here because the caller has its own page-header add button
+   * instead (see VideosPage). Only matters when onAddVideo is given.
+   * Defaults to true. */
+  showAddTile?: boolean;
+}
+
+// How long a hover preview plays before looping back to its start point -
+// long enough to actually show something happening, short enough to stay a
+// glance rather than committing to watching the clip.
+const HOVER_PREVIEW_DURATION_S = 5;
+
+// The static thumbnail (see results_router.get_thumbnail - now the video's
+// middle frame) swaps for the real, muted video on hover, seeked to that
+// same middle point so the still image visibly "comes alive" from where it
+// already was rather than jumping somewhere else first. No backend work -
+// reuses the same full-video stream the Results page already plays from.
+function VideoThumbnail({ job }: { job: Job }) {
+  const [hovering, setHovering] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canPreview = job.duration_s != null;
+  const previewStart = job.duration_s != null ? job.duration_s / 2 : 0;
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!hovering || !el) return;
+
+    el.currentTime = previewStart;
+    void el.play();
+
+    function handleTimeUpdate() {
+      if (el && el.currentTime - previewStart >= HOVER_PREVIEW_DURATION_S) {
+        el.currentTime = previewStart;
+      }
+    }
+
+    el.addEventListener("timeupdate", handleTimeUpdate);
+    return () => el.removeEventListener("timeupdate", handleTimeUpdate);
+  }, [hovering, previewStart]);
+
+  return (
+    <Box
+      onMouseEnter={() => canPreview && setHovering(true)}
+      onMouseLeave={() => setHovering(false)}
+      sx={{ width: "100%", aspectRatio: "16 / 9", position: "relative", backgroundColor: "action.hover", overflow: "hidden" }}
+    >
+      <Box
+        sx={{
+          position: "absolute",
+          inset: 0,
+          backgroundImage: `url(${api.thumbnailUrl(job.id)})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          opacity: hovering && canPreview ? 0 : 1,
+          transition: "opacity 0.15s ease",
+        }}
+      />
+      {canPreview && (
+        // eslint-disable-next-line jsx-a11y/media-has-caption
+        <Box
+          component="video"
+          ref={videoRef}
+          muted
+          playsInline
+          preload="none"
+          src={api.sourceVideoUrl(job.id)}
+          sx={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            opacity: hovering ? 1 : 0,
+            pointerEvents: "none",
+            transition: "opacity 0.15s ease",
+          }}
+        />
+      )}
+      <Box
+        sx={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          p: 1.5,
+          background: "linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0) 75%)",
+        }}
+      >
+        <Tooltip title={job.original_filename}>
+          <Typography noWrap sx={{ fontWeight: 600, color: "#fff" }}>
+            {formatUploadDate(job.created_at)}
+          </Typography>
+        </Tooltip>
+        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+          <JobStatusChip job={job} />
+          <SetupNeededChip job={job} />
+        </Stack>
+      </Box>
+    </Box>
+  );
 }
 
 function AddVideoCard({ onAddVideo }: { onAddVideo: () => void }) {
@@ -92,7 +193,7 @@ function AddVideoCard({ onAddVideo }: { onAddVideo: () => void }) {
 // "Add video" is a tile in the grid itself (always first) rather than a
 // separate button above it, so adding one reads as just another item in
 // the same list instead of a distinct page-level action.
-export function VideoGrid({ jobs, onSelectJob, onDeleteJob, onAddVideo }: VideoGridProps) {
+export function VideoGrid({ jobs, onSelectJob, onDeleteJob, onAddVideo, showAddTile = true }: VideoGridProps) {
   const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -119,7 +220,7 @@ export function VideoGrid({ jobs, onSelectJob, onDeleteJob, onAddVideo }: VideoG
   return (
     <>
       <Grid container spacing={2}>
-        {onAddVideo && (
+        {onAddVideo && showAddTile && (
           <Grid size={{ xs: 12, sm: 6, md: 4, lg: 3 }}>
             <AddVideoCard onAddVideo={onAddVideo} />
           </Grid>
@@ -185,36 +286,7 @@ export function VideoGrid({ jobs, onSelectJob, onDeleteJob, onAddVideo }: VideoG
                 </Box>
               )}
               <CardActionArea onClick={() => onSelectJob(job.id)}>
-                <Box
-                  sx={{
-                    width: "100%",
-                    aspectRatio: "16 / 9",
-                    display: "flex",
-                    alignItems: "flex-end",
-                    backgroundColor: "action.hover",
-                    backgroundImage: `url(${api.thumbnailUrl(job.id)})`,
-                    backgroundSize: "cover",
-                    backgroundPosition: "center",
-                  }}
-                >
-                  <Box
-                    sx={{
-                      width: "100%",
-                      p: 1.5,
-                      background: "linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0) 75%)",
-                    }}
-                  >
-                    <Tooltip title={job.original_filename}>
-                      <Typography noWrap sx={{ fontWeight: 600, color: "#fff" }}>
-                        {formatUploadDate(job.created_at)}
-                      </Typography>
-                    </Tooltip>
-                    <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
-                      <JobStatusChip job={job} />
-                      <SetupNeededChip job={job} />
-                    </Stack>
-                  </Box>
-                </Box>
+                <VideoThumbnail job={job} />
               </CardActionArea>
             </Card>
           </Grid>

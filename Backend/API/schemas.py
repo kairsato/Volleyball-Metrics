@@ -114,6 +114,16 @@ class CalibrationPointsOut(BaseModel):
     middle_right: Point
     far_left: Point
     far_right: Point
+    # The net's top edge above middle_left/middle_right - optional (a
+    # preset guess is always returned, see calibration.default_points), but
+    # only counted as a real calibration once dragged onto the actual net -
+    # see net_top_calibrated. Together with the 4 ground points, these give
+    # enough known 3D reference points (2 heights) to solve the camera's
+    # full pose (see calibration.py/CourtDefinition.court.
+    # estimate_camera_pose), which is what makes ball-height estimation
+    # possible at all.
+    net_top_left: Point
+    net_top_right: Point
     net_height_m: float
     calibrated: bool
     # Whether the saved calibration is locked - distinct from `calibrated`
@@ -122,6 +132,22 @@ class CalibrationPointsOut(BaseModel):
     # pattern as scoring and player identification (see
     # ScoreConfigOut.confirmed / PlayersListOut.confirmed).
     confirmed: bool = False
+    # Whether net_top_left/net_top_right were actually dragged onto the net
+    # (vs. left at their untouched preset guess) - camera-pose/ball-height
+    # estimation is skipped entirely when this is False, same spirit as the
+    # desktop tool's own net_calibrated flag (CourtDefinition.court.
+    # save_calibration).
+    net_top_calibrated: bool = False
+    # Whether a camera pose was actually solved from the 6 points (requires
+    # net_top_calibrated) and is usable for ball-height estimation - None
+    # when net_top_calibrated is False, otherwise reflects whether
+    # estimate_camera_pose actually succeeded.
+    camera_pose_available: Optional[bool] = None
+    # Mean reprojection error (pixels) of the solved camera pose against the
+    # 6 marked points - a rough, visible confidence signal for how much to
+    # trust height estimates from this calibration (single-view pose
+    # recovery has no external ground truth to validate against otherwise).
+    camera_pose_reprojection_error_px: Optional[float] = None
     # The near baseline's two corners and both attack lines, derived from
     # the 4 points above (see court.predict_court_geometry) - only present
     # once calibrated, and purely a preview: never something sent back in
@@ -138,6 +164,8 @@ class CalibrationIn(BaseModel):
     middle_right: Point
     far_left: Point
     far_right: Point
+    net_top_left: Point
+    net_top_right: Point
     net_height_m: float
 
 
@@ -146,6 +174,21 @@ class PlayerEvent(BaseModel):
     timestamp_s: float
     action_type: str
     rally_index: Optional[int] = None
+    # Ball speed immediately before/after this touch, in real-world m/s when
+    # real_units is True, otherwise px/s (see actionDetection.py/
+    # ball_speed.json's own identical real_units pattern) - None when the
+    # underlying ball_speed.json reading itself wasn't available at this
+    # frame.
+    speed_in_m_per_s: Optional[float] = None
+    speed_out_m_per_s: Optional[float] = None
+    real_units: bool = False
+    # Estimated height (metres) of the ball at this touch - only ever
+    # populated when this job's calibration includes a solved camera pose
+    # (see CalibrationPointsOut.camera_pose_available); None otherwise.
+    ball_height_m: Optional[float] = None
+    # Gap since the previous touch in the same rally (seconds) - None for a
+    # rally's first recorded touch.
+    time_since_prev_touch_s: Optional[float] = None
 
 
 class PlayerStat(BaseModel):
@@ -285,3 +328,102 @@ class ScoreOut(BaseModel):
     job_id: str
     config: ScoreConfigOut
     result: Optional[ScoreResultOut] = None
+
+
+class ActionQualityInstanceOut(BaseModel):
+    frame_idx: int
+    timestamp_s: float
+    rally_index: Optional[int] = None
+    player_stable_id: Optional[int] = None
+    # "A"/"B" (teams.assign_teams's anonymous geometric split) - None
+    # whenever team splitting itself is unavailable for this job (see
+    # ActionQualityOut.teams_available) or couldn't be determined for this
+    # specific player.
+    team: Optional[str] = None
+    # Named 0-1 sub-scores (e.g. "speed"/"placement"/"trajectory_height" for
+    # a serve) - a factor's value is None when it couldn't be computed for
+    # this instance (missing team/height data, no next touch to measure
+    # placement against, etc.); see action_quality.py's per-action-type
+    # weights for which keys exist per action type.
+    factors: dict[str, Optional[float]]
+    # Weighted average of `factors` (see action_quality._weighted_score) -
+    # None only when every single factor was unavailable.
+    overall_score: Optional[float] = None
+
+
+class ActionQualityPlayerOut(BaseModel):
+    stable_id: int
+    average_score: Optional[float] = None
+    count: int
+
+
+class ActionQualityCategoryOut(BaseModel):
+    # Fixed weights this category's overall_score values were computed
+    # with (see action_quality.py's SERVE_WEIGHTS/RECEIVE_WEIGHTS/
+    # SET_WEIGHTS/SPIKE_WEIGHTS) - surfaced so a UI can label which factors
+    # contributed and how much, not just show a bare percentage.
+    weights: dict[str, float]
+    count: int
+    average_score: Optional[float] = None
+    players: list[ActionQualityPlayerOut] = []
+    instances: list[ActionQualityInstanceOut] = []
+
+
+class ActionQualityOut(BaseModel):
+    job_id: str
+    # Whether teams.assign_teams found two well-tracked sides for this job -
+    # when False, every team-relative factor (placement, blockers) is None
+    # throughout and each category's overall_score is renormalized across
+    # whatever's left, same "available" pattern as MatchupOut.
+    teams_available: bool
+    # Whether this job's calibration has a solved camera pose (net-top
+    # points marked and pose-solving succeeded) - when False, every
+    # trajectory-height factor is None throughout.
+    height_available: bool
+    serve: ActionQualityCategoryOut
+    receive: ActionQualityCategoryOut
+    set: ActionQualityCategoryOut
+    spike: ActionQualityCategoryOut
+    caveats: list[str] = []
+
+
+class TeamPlayerSummaryOut(BaseModel):
+    name: str
+    total_hits: int
+    hits_by_type: dict[str, int] = {}
+
+
+class TeamVideoSummaryOut(BaseModel):
+    job_id: str
+    original_filename: str
+    game_wins: int
+    game_losses: int
+
+
+class TeamStatsOut(BaseModel):
+    team_id: str
+    team_name: str
+    # Every complete job with at least one roster member named in its
+    # player_stats.json contributes to total_hits/hits_by_type/players
+    # below, regardless of whether Scoring was ever configured for it.
+    videos_total: int
+    # Only jobs where Scoring was configured with this team as team_x/
+    # team_y contribute to match/game records and the radar - see
+    # team_stats.py's module docstring for why (team_roster.py has no
+    # inherent link to any per-video geometric side without it).
+    videos_with_scoring: int
+    match_wins: int
+    match_losses: int
+    game_wins: int
+    game_losses: int
+    radar: list[RadarPointOut] = []
+    total_hits: int
+    hits_by_type: dict[str, int] = {}
+    players: list[TeamPlayerSummaryOut] = []
+    videos: list[TeamVideoSummaryOut] = []
+
+
+class PlayerRadarOut(BaseModel):
+    name: str
+    videos_with_data: int
+    radar: list[RadarPointOut] = []

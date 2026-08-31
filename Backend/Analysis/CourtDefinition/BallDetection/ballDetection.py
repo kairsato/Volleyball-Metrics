@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-from CourtDefinition.court import COURT_LENGTH, COURT_WIDTH
+from CourtDefinition.court import COURT_LENGTH, COURT_WIDTH, camera_to_world
 
 # Ball detection and speed estimation.
 #
@@ -58,6 +58,18 @@ from CourtDefinition.court import COURT_LENGTH, COURT_WIDTH
 MODEL_PATH = str(Path(__file__).parent / "ball_yolo11m_finetuned.pt")
 OUTPUT_VIDEO_NAME = "ball.mp4"
 SPEED_LOG_NAME = "ball_speed.json"
+# Every frame's raw primary-detector candidates (after the size filter, but
+# before the court-ROI filter that depends on calibration) - see
+# reselect_ball(). Lets a later calibration change re-pick the ball from
+# whatever was actually seen, without re-running the detector. Frames with
+# zero candidates are omitted entirely to keep this file small; "frame_count"
+# in the header is what lets a replay still iterate every real frame index
+# (see reselect_ball). Fallback-detector candidates are deliberately not
+# included - the fallback's colour-histogram veto needs the source frame's
+# actual pixels, which aren't saved here, so a frame that originally needed
+# the fallback detector is simply a coast (predicted-position) frame on
+# replay, same as if the fallback had also found nothing that frame.
+RAW_CANDIDATES_LOG_NAME = "ball_candidates.json"
 
 BALL_CLASS_ID = 0  # single-class model: 0 = "volleyball"
 
@@ -104,10 +116,18 @@ HIST_DISTANCE_THRESHOLD = 0.65
 # Name of the calibration file CourtDefinition.court saves into output_path
 COURT_FILE_NAME = "court.json"
 
-# Official volleyball diameter in metres - kept for reference; not required by
-# the homography-based speed calculation below, but useful if this is ever
-# extended to estimate height/depth from the ball's apparent size.
+# Official volleyball diameter in metres - used by estimate_ball_height below
+# to turn the ball's apparent pixel size into a distance-from-camera estimate
+# (see that function's docstring), on top of its original role as reference
+# for the homography-based ground-plane speed calculation.
 BALL_DIAMETER_M = 0.21
+
+# Anything estimate_ball_height returns above this is treated as noise, not
+# a real reading (an extremely small/blurred apparent diameter blows up the
+# depth estimate) - same spirit as MAX_PLAUSIBLE_REPORTED_SPEED_MS below.
+# Well above any realistic volleyball height (a jump serve's peak is a few
+# metres above the net at most).
+BALL_HEIGHT_MAX_PLAUSIBLE_M = 12.0
 
 # --- Acquisition (full-frame search, used while there's no active track) ---
 
@@ -290,6 +310,94 @@ def load_court_corners(output_path):
         return None
 
     return np.array(points, dtype=np.float64)
+
+
+def load_camera_pose(output_path):
+    """
+    Load the camera pose (intrinsics + extrinsics) CourtDefinition.court's
+    estimate_camera_pose solved and calibration.py cached into court.json's
+    "camera_pose" key - see estimate_ball_height below for what it's used
+    for. Returns None if no calibration has been saved, the net-top points
+    were never actually marked (see calibration.py's net_top_calibrated
+    flag - an untouched preset guess never gets a camera_pose entry at all),
+    or pose-solving itself failed at save time.
+    """
+    court_file = Path(output_path) / COURT_FILE_NAME
+
+    if not court_file.exists():
+        return None
+
+    try:
+        with open(court_file) as f:
+            data = json.load(f)
+
+        pose = data.get("camera_pose")
+        if pose is None:
+            return None
+
+        focal_px = float(pose["focal_px"])
+        cx, cy = pose["principal_point"]
+        K = np.array([[focal_px, 0.0, cx], [0.0, focal_px, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+        rvec = np.array(pose["rvec"], dtype=np.float64).reshape(3, 1)
+        tvec = np.array(pose["tvec"], dtype=np.float64).reshape(3, 1)
+
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError) as e:
+        print(f"Could not read camera pose from {court_file} ({e}); "
+              f"ball height will not be estimated.")
+        return None
+
+    return K, rvec, tvec
+
+
+def estimate_ball_height(box, camera_pose):
+    """
+    Estimates the ball's height (metres) above the court's ground plane from
+    a single detection box, using the camera pose CourtDefinition.court.
+    estimate_camera_pose solved (see load_camera_pose above) plus the ball's
+    known real-world diameter (BALL_DIAMETER_M):
+
+      1. Apparent diameter in pixels - deliberately the SMALLER of the box's
+         width/height, not an average: motion blur elongates a fast-moving
+         ball along its direction of travel, so the smaller axis is the more
+         robust true-diameter proxy of the two.
+      2. Depth (distance along the camera's optical axis) from similar
+         triangles: real diameter / apparent diameter = depth / focal length.
+      3. Back-project the box centre through the inverse intrinsic matrix,
+         scaled by that depth, to get the ball's position in camera-space
+         3D coordinates.
+      4. Rotate/translate that into world coordinates via the camera's
+         extrinsics (court.camera_to_world) - the world frame's Z axis is
+         exactly "height above the court plane" by construction (see
+         estimate_camera_pose's world point layout), so no further
+         conversion is needed.
+
+    Returns None if the box is degenerate (zero-size) or the estimate is
+    implausible (see BALL_HEIGHT_MAX_PLAUSIBLE_M) - a wrong reading here
+    would otherwise silently poison anything built on top of it (serve/set
+    trajectory-height scoring), same reasoning as speed's own
+    MAX_PLAUSIBLE_REPORTED_SPEED_MS clamp.
+    """
+    K, rvec, tvec = camera_pose
+
+    x1, y1, x2, y2 = box
+    apparent_diameter_px = min(x2 - x1, y2 - y1)
+    if apparent_diameter_px <= 0:
+        return None
+
+    focal_px = K[0, 0]
+    depth = focal_px * BALL_DIAMETER_M / apparent_diameter_px
+
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    ray = np.linalg.inv(K) @ np.array([cx, cy, 1.0])
+    point_camera = depth * ray
+
+    point_world = camera_to_world(point_camera, rvec, tvec)
+    height = float(point_world[2])
+
+    if height < -0.5 or height > BALL_HEIGHT_MAX_PLAUSIBLE_M:
+        return None
+
+    return height
 
 
 def build_ball_roi(corners, frame_width, frame_height):
@@ -669,8 +777,14 @@ class BallTracker:
     coasting through a miss.
     """
 
-    def __init__(self, matrix, fps, frame_width, frame_height):
+    def __init__(self, matrix, fps, frame_width, frame_height, camera_pose=None):
         self.matrix = matrix
+        # (K, rvec, tvec) from load_camera_pose, or None if this job's
+        # calibration doesn't have a solved camera pose yet - see
+        # estimate_ball_height. Independent of `matrix`: a job can have a
+        # ground-plane homography (for x/y position and speed) without ever
+        # having marked the net-top points a height estimate needs.
+        self.camera_pose = camera_pose
         self.fps = fps
         self.diagonal = float(np.hypot(frame_width, frame_height))
         self.history = []
@@ -797,6 +911,10 @@ class BallTracker:
 
             self.coast_frames = 0
             interpolated = False
+            # Height is only ever derived from an actually-measured box, not
+            # a coasted position - there's no apparent size to measure a
+            # depth from once the filter is just extrapolating.
+            height = estimate_ball_height(box, self.camera_pose) if self.camera_pose is not None else None
         else:
             if not self.kf.initialized:
                 return None
@@ -805,10 +923,11 @@ class BallTracker:
             confidence = None
             self.coast_frames += 1
             interpolated = True
+            height = None
 
         court = pixel_to_court(pixel[0], pixel[1], self.matrix) if self.matrix is not None else None
         point = {"frame_idx": frame_idx, "pixel": pixel, "court": court,
-                 "confidence": confidence, "interpolated": interpolated}
+                 "confidence": confidence, "interpolated": interpolated, "height_m": height}
 
         self.history.append(point)
         if len(self.history) > TRAIL_LENGTH:
@@ -845,6 +964,7 @@ class BallTracker:
             "interpolated": interpolated,
             "pixel": pixel.tolist(),
             "court": list(court) if court is not None else None,
+            "height_m": height,
             "real_units": real_units,
             "speed_m_per_s": speed if real_units else None,
             "speed_px_per_s": speed if not real_units else None,
@@ -891,6 +1011,136 @@ class BallTracker:
         self.kf = BallKalmanFilter(self.diagonal)
         self.coast_frames = 0
         self.history = []
+
+
+def _revalidation_step(frames_since_revalidation, tracking_mode, revalidation_interval_frames):
+    """
+    Advances the revalidation countdown by one frame - shared by the live
+    detectBall loop (which also uses `tracking_mode`/the returned "due" flag
+    to decide whether to run a narrow zoom-crop search or a full tiled scan)
+    and reselect_ball's replay (which only cares about the "due" flag, to
+    decide match() vs. revalidate()). Returns (due_for_revalidation,
+    new_frames_since_revalidation).
+    """
+    due = tracking_mode and frames_since_revalidation >= revalidation_interval_frames
+    if tracking_mode and not due:
+        return due, frames_since_revalidation + 1
+    return due, 0
+
+
+def _select_ball(tracker, static_zones, candidates, roi, frame_idx, predicted, std, due_for_revalidation):
+    """
+    Shared by the live detectBall loop and reselect_ball's replay: given this
+    frame's already size-filtered primary-detector candidates (pre-ROI),
+    applies the court ROI + static-zone filtering/learning and picks (or
+    confirms) the ball via the tracker's gated match/revalidate. Returns
+    (matched, predicted, std) - predicted/std come back reset to None if a
+    newly-learned static zone just dropped the current lock, so a caller
+    that goes on to try the fallback detector (live detectBall only; see
+    RAW_CANDIDATES_LOG_NAME) doesn't gate against an abandoned prediction.
+    """
+    filtered = [d for d in candidates if box_in_roi(d[0], roi)]
+    filtered = [d for d in filtered if not static_zones.is_excluded(centre_of(d[0]))]
+
+    newly_excluded = static_zones.observe(filtered, frame_idx)
+    if newly_excluded and tracker.is_tracking:
+        last_pixel = tracker.kf.position()
+        if any(np.linalg.norm(last_pixel - c) <= static_zones.exclusion_radius for c in newly_excluded):
+            tracker.lose()
+            predicted, std = None, None
+
+    if due_for_revalidation:
+        matched = tracker.revalidate(filtered, predicted, std)
+    else:
+        matched = tracker.match(filtered, predicted, std)
+
+    return matched, predicted, std
+
+
+def _serialize_candidates(frame_idx, candidates):
+    return {
+        "frame_idx": frame_idx,
+        "candidates": [[float(box[0]), float(box[1]), float(box[2]), float(box[3]), float(conf)]
+                        for box, conf in candidates],
+    }
+
+
+def reselect_ball(output_path):
+    """
+    Re-picks the ball trajectory from RAW_CANDIDATES_LOG_NAME (the raw
+    per-frame primary-detector candidates detectBall saves) against whatever
+    court.json says *now*, without re-running the detector - rewrites
+    SPEED_LOG_NAME to match. Runs the exact same selection algorithm
+    (_select_ball/_revalidation_step, BallTracker, StaticZoneLearner) as the
+    live detectBall loop, just fed pre-recorded candidates instead of live
+    YOLO output, so a recalibration is cheap (pure JSON in/out, no model
+    inference, no video decode).
+
+    Two things a from-scratch reprocess would catch that this can't:
+      - A frame whose original run only searched a tight zoom-crop (see
+        BallTracker.zoom_crop) still only has whatever that crop actually
+        saw - if a differently-calibrated court would put "the ball"
+        somewhere that crop never looked, this can't recover it.
+      - Fallback-detector candidates aren't saved at all (see
+        RAW_CANDIDATES_LOG_NAME) - a frame that originally relied on the
+        fallback is a coast frame here.
+    Both are inherent to reusing already-computed detections rather than
+    re-running them; a job whose calibration turns out to need either needs
+    a real reprocess instead (see jobs_router.redo_job).
+
+    Raises ValueError if this job's ball detection ran before
+    RAW_CANDIDATES_LOG_NAME existed - there's nothing to re-pick from.
+    """
+    candidates_file = Path(output_path) / RAW_CANDIDATES_LOG_NAME
+    if not candidates_file.exists():
+        raise ValueError(
+            f"No raw ball candidates saved for this job ({candidates_file} doesn't exist) - "
+            f"a full reprocess is required to recalibrate its ball tracking."
+        )
+
+    with open(candidates_file) as f:
+        data = json.load(f)
+
+    fps = data["fps"]
+    frame_width = data["frame_width"]
+    frame_height = data["frame_height"]
+    frame_count = data["frame_count"]
+    by_frame = {entry["frame_idx"]: entry["candidates"] for entry in data["frames"]}
+
+    matrix = load_homography(output_path)
+    camera_pose = load_camera_pose(output_path)
+    corners = load_court_corners(output_path)
+    roi = build_ball_roi(corners, frame_width, frame_height) if corners is not None else None
+
+    tracker = BallTracker(matrix, fps, frame_width, frame_height, camera_pose)
+    static_zones = StaticZoneLearner(fps, frame_width, frame_height)
+    revalidation_interval_frames = max(1, round(REVALIDATION_INTERVAL_SECONDS * fps))
+    frames_since_revalidation = 0
+
+    speed_log = []
+
+    for frame_idx in range(frame_count):
+        raw = by_frame.get(frame_idx, [])
+        candidates = [(np.array(c[:4], dtype=float), c[4]) for c in raw]
+
+        predicted, std = tracker.predict()
+        tracking_mode = predicted is not None and not tracker.is_lost()
+        due_for_revalidation, frames_since_revalidation = _revalidation_step(
+            frames_since_revalidation, tracking_mode, revalidation_interval_frames)
+
+        matched, predicted, std = _select_ball(
+            tracker, static_zones, candidates, roi, frame_idx, predicted, std, due_for_revalidation)
+
+        reading = tracker.observe(matched, frame_idx)
+        if reading is not None:
+            speed_log.append(reading)
+
+    speed_log_file = Path(output_path) / SPEED_LOG_NAME
+    with open(speed_log_file, "w") as f:
+        json.dump(speed_log, f, indent=2)
+
+    print(f"Ball speed log recalibrated from {len(by_frame)} saved candidate frame(s): {speed_log_file}")
+    return speed_log_file
 
 
 def draw_roi(frame, roi):
@@ -1061,6 +1311,13 @@ def detectBall(video_path, output_path, show_preview=False, save_video=False):
     else:
         print("No court calibration found; ball speed will be reported in pixels/sec instead.")
 
+    camera_pose = load_camera_pose(output_path)
+    if camera_pose is not None:
+        print("Loaded camera pose; ball height will be estimated.")
+    else:
+        print("No camera pose available (net-top calibration points not marked); "
+              "ball height will not be estimated.")
+
     corners = load_court_corners(output_path)
     roi = build_ball_roi(corners, frame_width, frame_height) if corners is not None else None
 
@@ -1072,7 +1329,7 @@ def detectBall(video_path, output_path, show_preview=False, save_video=False):
 
     tiles = generate_tiles(frame_width, frame_height, ACQUISITION_TILE_GRID, ACQUISITION_TILE_OVERLAP_FRACTION)
 
-    tracker = BallTracker(matrix, fps, frame_width, frame_height)
+    tracker = BallTracker(matrix, fps, frame_width, frame_height, camera_pose)
     static_zones = StaticZoneLearner(fps, frame_width, frame_height)
     color_profile = BallColorProfile()
     revalidation_interval_frames = max(1, round(REVALIDATION_INTERVAL_SECONDS * fps))
@@ -1083,6 +1340,7 @@ def detectBall(video_path, output_path, show_preview=False, save_video=False):
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     speed_log = []
+    raw_candidates_log = []
     frame_idx = 0
 
     target_frame_seconds = 1.0 / fps
@@ -1097,14 +1355,14 @@ def detectBall(video_path, output_path, show_preview=False, save_video=False):
 
         predicted, std = tracker.predict()
         tracking_mode = predicted is not None and not tracker.is_lost()
-        due_for_revalidation = tracking_mode and frames_since_revalidation >= revalidation_interval_frames
+        due_for_revalidation, frames_since_revalidation = _revalidation_step(
+            frames_since_revalidation, tracking_mode, revalidation_interval_frames)
         search_box_for_drawing = None
 
         if tracking_mode and not due_for_revalidation:
             crop_box = tracker.zoom_crop(predicted, std)
             raw = detect_in_crop(model, frame, crop_box, ZOOM_IMG_SIZE, ZOOM_CONFIDENCE_THRESHOLD, device)
             search_box_for_drawing = crop_box
-            frames_since_revalidation += 1
         else:
             if predicted is not None and not due_for_revalidation:
                 # Coasted past the miss limit - drop the stale track before
@@ -1114,34 +1372,13 @@ def detectBall(video_path, output_path, show_preview=False, save_video=False):
                 tracker.lose()
                 predicted, std = None, None
             raw = detect_tiled(model, frame, tiles, ACQUISITION_IMG_SIZE, CONFIDENCE_THRESHOLD, device)
-            frames_since_revalidation = 0
 
         candidates = [d for d in raw if box_diagonal(d[0]) >= MIN_BALL_DIAGONAL_PX]
-        candidates = [d for d in candidates if box_in_roi(d[0], roi)]
-        candidates = [d for d in candidates if not static_zones.is_excluded(centre_of(d[0]))]
+        if candidates:
+            raw_candidates_log.append(_serialize_candidates(frame_idx, candidates))
 
-        # Learning runs every frame, tracking mode included - not just during
-        # acquisition. A bad initial lock onto a static false positive (a
-        # wall fixture, a shadow) keeps re-matching within its own zoom crop
-        # indefinitely otherwise: it never coasts (so never hits the miss
-        # limit that would trigger a fresh full-frame scan), and a genuinely
-        # moving ball never clusters into a static zone by construction, so
-        # this can't mistakenly flag real play.
-        newly_excluded = static_zones.observe(candidates, frame_idx)
-        if newly_excluded and tracker.is_tracking:
-            last_pixel = tracker.kf.position()
-            if any(np.linalg.norm(last_pixel - c) <= static_zones.exclusion_radius for c in newly_excluded):
-                # The track just turned out to be following a static false
-                # positive, not the ball - drop it, and don't let matching
-                # below use the now-abandoned prediction, or it would just
-                # gate right back onto whatever's still sitting at that spot.
-                tracker.lose()
-                predicted, std = None, None
-
-        if due_for_revalidation:
-            matched = tracker.revalidate(candidates, predicted, std)
-        else:
-            matched = tracker.match(candidates, predicted, std)
+        matched, predicted, std = _select_ball(
+            tracker, static_zones, candidates, roi, frame_idx, predicted, std, due_for_revalidation)
 
         if matched is not None:
             # Only ever learn the ball's colour from the fine-tuned model's
@@ -1227,4 +1464,15 @@ def detectBall(video_path, output_path, show_preview=False, save_video=False):
     with open(speed_log_file, "w") as f:
         json.dump(speed_log, f, indent=2)
 
+    candidates_log_file = Path(output_path) / RAW_CANDIDATES_LOG_NAME
+    with open(candidates_log_file, "w") as f:
+        json.dump({
+            "fps": fps,
+            "frame_width": frame_width,
+            "frame_height": frame_height,
+            "frame_count": frame_idx,
+            "frames": raw_candidates_log,
+        }, f)
+
     print(f"Ball speed log saved: {speed_log_file}")
+    print(f"Raw ball candidates saved: {candidates_log_file}")

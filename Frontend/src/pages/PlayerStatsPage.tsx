@@ -15,8 +15,9 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import PersonIcon from "@mui/icons-material/Person";
 import { Link as RouterLink, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
-import type { Job } from "../lib/types";
+import type { Job, RadarPoint } from "../lib/types";
 import { LoadingSpinner } from "../components/LoadingSpinner";
+import { RadarChart } from "../components/results/RadarChart";
 
 const ACTION_COLORS: Record<string, string> = {
   serve: "#3b82f6",
@@ -118,6 +119,7 @@ export function PlayerStatsPage({ jobs }: PlayerStatsPageProps) {
   const navigate = useNavigate();
   const name = searchParams.get("name");
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
+  const [radar, setRadar] = useState<RadarPoint[] | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -144,6 +146,19 @@ export function PlayerStatsPage({ jobs }: PlayerStatsPageProps) {
     // PlayersPage for why this can't just depend on completeJobs itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, completeJobIds]);
+
+  useEffect(() => {
+    if (!name) return;
+    let cancelled = false;
+    setRadar(null);
+    api
+      .getPlayerRadar(name)
+      .then((res) => !cancelled && setRadar(res.radar))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [name]);
 
   if (!name) return <Navigate to="/players" replace />;
 
@@ -232,6 +247,19 @@ export function PlayerStatsPage({ jobs }: PlayerStatsPageProps) {
                   </Stack>
                 ))}
               </Stack>
+            </Box>
+          )}
+
+          {radar?.some((p) => p.sample_size_a > 0) && (
+            <Box sx={{ mb: 4 }}>
+              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                Win % by action
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                How often {name}'s side won the rally after they performed each action, across every video with a
+                usable team split.
+              </Typography>
+              <RadarChart radar={radar} />
             </Box>
           )}
 

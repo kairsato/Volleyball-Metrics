@@ -101,6 +101,16 @@
   stroke-width: 3;
 }
 
+/* The net's vertical edges, from each marked net-line point up to its
+   matching net-top point - purple to match the marked-point handle colour,
+   tying the two together visually as "one thing being marked" (the net),
+   distinct from the (blue) net line and (yellow) court outline below it. */
+.net-top-line {
+  stroke: #aa3bff;
+  stroke-width: 2.5;
+  stroke-dasharray: 4 4;
+}
+
 /* The near baseline + both attack lines - never marked directly, always
    derived from the 4 marked points (see courtGeometry.ts) - drawn dashed
    and dimmer than the marked lines above so it reads as "predicted", not

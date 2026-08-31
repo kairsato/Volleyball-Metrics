@@ -120,8 +120,10 @@ async def process_job(job_id: str):
     # court.json *while tracking runs* if it exists yet (see
     # tracker_offline.py/ballDetection.py), but both fall back gracefully
     # (pixel-space positions/speeds, full-frame ball search) when it
-    # doesn't - calibrating afterward just means redoing the job (see
-    # redo_job below) to get real-world court coordinates retroactively.
+    # doesn't - calibrating afterward means recalibrating the job (see
+    # recalibrate_job below) to get real-world court coordinates
+    # retroactively, which CalibrationPanel.handleSave (frontend) triggers
+    # automatically on save.
     job = _get_job_or_404(job_id)
 
     if job.status not in (STATUS_UPLOADED, STATUS_ERROR, STATUS_CANCELLED):
@@ -149,30 +151,15 @@ async def finalize_job(job_id: str):
     return _job_out(store.get(job_id))
 
 
-@router.post("/{job_id}/redo", response_model=JobOut)
-async def redo_job(job_id: str):
-    """
-    Resets a completed job back to "uploaded" so its court calibration (and
-    everything downstream of it) can be redone from scratch. Court
-    calibration isn't just cosmetic - player/ball tracking convert pixel
-    positions to real court coordinates using it *while tracking runs*, so
-    fixing a bad calibration after the fact means re-running the whole
-    phase-one pipeline, not just re-saving court.json.
-
-    Any existing player names/ignores are cleared rather than carried
-    forward - a fresh tracking run assigns new stable_ids, so the old
-    name-to-id mapping would silently apply to the wrong people.
-    """
-    job = _get_job_or_404(job_id)
-
-    if job.status != STATUS_COMPLETE:
-        raise HTTPException(status_code=409, detail="Only a completed job can be redone")
-
-    output_path = config.output_dir(job_id)
+def _reset_for_full_reprocess(job_id: str, output_path: Path) -> Job:
+    """Shared by redo_job and recalibrate_job's old-job fallback: any
+    existing player names/ignores are cleared rather than carried forward -
+    a fresh tracking run assigns new stable_ids, so the old name-to-id
+    mapping would silently apply to the wrong people."""
     (output_path / config.PLAYER_NAMES_NAME).unlink(missing_ok=True)
     (output_path / config.PLAYER_IGNORED_NAME).unlink(missing_ok=True)
 
-    updated = store.update(
+    return store.update(
         job_id,
         status=STATUS_UPLOADED,
         stage=None,
@@ -180,7 +167,51 @@ async def redo_job(job_id: str):
         stage_durations_s={},
         error=None,
     )
+
+
+@router.post("/{job_id}/redo", response_model=JobOut)
+async def redo_job(job_id: str):
+    """
+    Resets a completed job back to "uploaded" so everything can be
+    reprocessed from scratch. Prefer recalibrate_job below for a plain
+    calibration change on a job that already has ball_candidates.json - this
+    full reset is now mainly the fallback path for jobs that predate it.
+    """
+    job = _get_job_or_404(job_id)
+
+    if job.status != STATUS_COMPLETE:
+        raise HTTPException(status_code=409, detail="Only a completed job can be redone")
+
+    updated = _reset_for_full_reprocess(job_id, config.output_dir(job_id))
     return _job_out(updated)
+
+
+@router.post("/{job_id}/recalibrate", response_model=JobOut)
+async def recalibrate_job(job_id: str):
+    """
+    Triggered after saving a new court calibration (see
+    calibration_router.set_points) on an already-complete job. Cheap path:
+    re-picks the ball from its saved raw candidates and re-derives player
+    court coordinates/auto-ignores, then re-runs action_detection and phase
+    two - without re-running player_tracking's or ball_detection's actual
+    (expensive) detection passes (see pipeline.start_recalibration). Falls
+    back to a full reprocess for a job whose ball detection ran before
+    ball_candidates.json existed - there's nothing for the cheap path to
+    re-pick the ball from without it.
+    """
+    job = _get_job_or_404(job_id)
+
+    if job.status != STATUS_COMPLETE:
+        raise HTTPException(status_code=409, detail="Only a completed job can be recalibrated")
+
+    output_path = config.output_dir(job_id)
+    if not (output_path / config.BALL_CANDIDATES_FILE_NAME).exists():
+        _reset_for_full_reprocess(job_id, output_path)
+        pipeline.start_phase_one(job_id)
+        return _job_out(store.get(job_id))
+
+    pipeline.start_recalibration(job_id)
+    return _job_out(store.get(job_id))
 
 
 @router.post("/{job_id}/cancel", response_model=JobOut)

@@ -15,6 +15,7 @@ import { ActionsTab } from "./results/ActionsTab";
 import { OverallTab } from "./results/OverallTab";
 import { RalliesTab } from "./results/RalliesTab";
 import { SetupTab } from "./results/SetupTab";
+import { StatsTab } from "./results/StatsTab";
 import type { FlatEvent } from "./results/types";
 
 // How long each clip plays before a "play all" playlist jumps to the next
@@ -35,7 +36,7 @@ const PAGE_CONTENT_HEIGHT = `calc(100vh - ${APP_BAR_HEIGHT_PX + PAGE_PADDING_PX 
 
 // Mirrors the tab into ?tab=<name> - readable/shareable alongside ?jobId=,
 // same native-URLSearchParams approach App.tsx uses for the job itself.
-const TAB_NAMES = ["overall", "rallies", "actions", "setup"] as const;
+const TAB_NAMES = ["overall", "stats", "rallies", "actions", "setup"] as const;
 const ACTIONS_TAB_INDEX = TAB_NAMES.indexOf("actions");
 const TAB_QUERY_PARAM = "tab";
 
@@ -254,6 +255,7 @@ export function ResultsView({ job }: ResultsViewProps) {
           >
             <Tabs value={tab} onChange={(_, value) => changeTab(value)} sx={{ flex: 1, minWidth: 0 }}>
               <Tab label="Overall" />
+              <Tab label="Stats" />
               <Tab label="Rallies" />
               <Tab label="Actions" />
               <Tab
@@ -267,8 +269,10 @@ export function ResultsView({ job }: ResultsViewProps) {
           </Stack>
 
           {tab === 0 && <OverallTab results={results} flatEvents={flatEvents} onSeek={seekTo} onJumpToAction={jumpToAction} />}
-          {tab === 1 && (
+          {tab === 1 && <StatsTab jobId={job.id} />}
+          {tab === 2 && (
             <RalliesTab
+              jobId={job.id}
               rallies={results.rallies}
               flatEvents={flatEvents}
               currentTime={currentTime}
@@ -276,7 +280,7 @@ export function ResultsView({ job }: ResultsViewProps) {
               onPlayAll={playAll}
             />
           )}
-          {tab === 2 && (
+          {tab === 3 && (
             <ActionsTab
               results={results}
               flatEvents={flatEvents}
@@ -286,7 +290,7 @@ export function ResultsView({ job }: ResultsViewProps) {
               presetFilter={actionFilterPreset}
             />
           )}
-          {tab === 3 && <SetupTab job={job} />}
+          {tab === 4 && <SetupTab job={job} />}
         </Box>
       </Box>
     </Box>

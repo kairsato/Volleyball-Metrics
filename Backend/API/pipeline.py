@@ -139,10 +139,12 @@ def _run_stage(job_id: str, stage: str, video_path: Path, output_path: Path):
 
 
 def _phase_one(job_id: str, video_path: Path, output_path: Path):
-    # Court calibration happens up front through the web UI (see
-    # api/calibration.py) instead of the desktop courtDefine() GUI - by the
-    # time this runs, court.json already exists and "court_calibration" is
-    # already marked complete.
+    # Court calibration is a post-processing Setup tab step (see
+    # calibration_router.py), so court.json may not exist yet the first time
+    # this runs - player_tracking/ball_detection fall back to pixel-space
+    # positions/speeds and a full-frame ball search in that case. Once
+    # calibration is saved through the web UI, CalibrationPanel.handleSave
+    # calls redo/process to re-run this phase against the saved court.json.
     output_path.mkdir(parents=True, exist_ok=True)
 
     _run_stage(job_id, "player_tracking", video_path, output_path)
@@ -204,3 +206,30 @@ def start_phase_two(job_id: str):
     store.update(job_id, status=STATUS_FINALIZING, error=None)
 
     _enqueue(job_id, STATUS_COMPLETE, lambda: _phase_two(job_id, video_path, output_path))
+
+
+def start_recalibration(job_id: str):
+    """
+    The cheap path for a calibration change on an already-"complete" job:
+    re-picks the ball from its already-saved raw candidates and re-derives
+    player court coordinates/auto-ignores against the new court.json (the
+    "recalibrate" stage - see stage_runner._recalibrate), then re-runs phase
+    two to refresh stats/dashboard/video - all without re-running
+    player_tracking's or ball_detection's actual (expensive) detection
+    passes. Caller (jobs_router.recalibrate_job) has already confirmed
+    ball_candidates.json exists - there's nothing for "recalibrate" to
+    re-pick the ball from without it.
+    """
+    video_path = config.find_input_video(job_id)
+    if video_path is None:
+        store.update(job_id, status=STATUS_ERROR, error="No uploaded video found for this job.")
+        return
+
+    output_path = config.output_dir(job_id)
+    store.update(job_id, status=STATUS_FINALIZING, error=None)
+
+    def work():
+        _run_stage(job_id, "recalibrate", video_path, output_path)
+        _phase_two(job_id, video_path, output_path)
+
+    _enqueue(job_id, STATUS_COMPLETE, work)

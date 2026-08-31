@@ -17,14 +17,14 @@ for directory in (BACKEND_DIR, ANALYSIS_DIR):
     if str(directory) not in sys.path:
         sys.path.insert(0, str(directory))
 
-from CourtDefinition.BallDetection.ballDetection import detectBall  # noqa: E402
+from CourtDefinition.BallDetection.ballDetection import detectBall, reselect_ball  # noqa: E402
 from PlayerDetection.tracker_offline import trackplayers_offline  # noqa: E402
 from GameStatusDetection.gameStatusDetection import detectGameStatus  # noqa: E402
 from ActionDetection.actionDetection import detectActions  # noqa: E402
 from PostProcessing.consolidate import consolidateStats  # noqa: E402
 from PostProcessing.renderVideo import renderAnnotatedVideo  # noqa: E402
 from PostProcessing.generate_dashboard import generateDashboard  # noqa: E402
-from API.players import write_grouped_actions  # noqa: E402
+from API.players import recalibrate_players, write_grouped_actions  # noqa: E402
 
 
 def _consolidate_with_groups(output: str):
@@ -32,11 +32,25 @@ def _consolidate_with_groups(output: str):
     consolidateStats(output, actions_filename=grouped_file.name)
 
 
+def _recalibrate(video: str, output: str):
+    """Cheap re-run for a calibration change on an already-processed job -
+    see pipeline.start_recalibration. Re-picks the ball from its saved raw
+    candidates and re-derives player court coordinates/auto-ignores, then
+    re-runs action_detection (the only downstream stage whose output
+    actually depends on those court coordinates - see actionDetection.py)
+    against the refreshed logs. Never touches player_tracking's or
+    ball_detection's own (expensive) detection passes."""
+    reselect_ball(output)
+    recalibrate_players(Path(output))
+    detectActions(video, output)
+
+
 STAGE_FUNCS = {
     "player_tracking": lambda video, output: trackplayers_offline(video, output, show_preview=False, save_video=False),
     "ball_detection": lambda video, output: detectBall(video, output, show_preview=False, save_video=False),
     "game_status": lambda video, output: detectGameStatus(video, output),
     "action_detection": lambda video, output: detectActions(video, output),
+    "recalibrate": _recalibrate,
     "consolidating": lambda video, output: _consolidate_with_groups(output),
     "dashboard": lambda video, output: generateDashboard(output),
     "rendering": lambda video, output: renderAnnotatedVideo(video, output),

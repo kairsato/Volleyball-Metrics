@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
-from .. import team_roster
-from ..schemas import TeamRosterOut, TeamSaveIn
+from .. import team_roster, team_stats
+from ..schemas import TeamRosterOut, TeamSaveIn, TeamStatsOut
 
 router = APIRouter(prefix="/api/teams", tags=["teams"])
 
@@ -28,3 +28,11 @@ async def update_team(team_id: str, body: TeamSaveIn):
 @router.delete("/{team_id}", response_model=TeamRosterOut)
 async def delete_team(team_id: str):
     return TeamRosterOut(teams=team_roster.remove_team(team_id))
+
+
+@router.get("/{team_id}/stats", response_model=TeamStatsOut)
+async def get_team_stats(team_id: str):
+    result = team_stats.compute_team_stats(team_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Team not found")
+    return TeamStatsOut(**result)
