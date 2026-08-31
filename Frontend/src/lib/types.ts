@@ -281,6 +281,12 @@ export interface ActionQualityInstance {
   // Weighted average of `factors` - null only when every factor was
   // unavailable.
   overall_score: number | null;
+  // Raw values a couple of the factors above are derived from - (x, y)
+  // metres, net at x=9.0. Null under the same conditions the corresponding
+  // factor is null.
+  ball_court: [number, number] | null;
+  time_since_prev_touch_s: number | null;
+  ball_height_m: number | null;
 }
 
 export interface ActionQualityPlayer {
@@ -293,6 +299,10 @@ export interface ActionQualityCategory {
   // Fixed weights this category's overall_score values were computed with -
   // surfaced so the UI can label which factors contributed and how much.
   weights: Record<string, number>;
+  // Fixed "ideal" values a UI can compare a raw instance value against
+  // (e.g. Set's height_ideal_m/time_reference_s) - empty for a category
+  // with no single meaningful "ideal" to show.
+  reference: Record<string, number>;
   count: number;
   average_score: number | null;
   players: ActionQualityPlayer[];
@@ -313,6 +323,12 @@ export interface ActionQualityOut {
   set: ActionQualityCategory;
   spike: ActionQualityCategory;
   caveats: string[];
+}
+
+export interface QualitiesOut {
+  // "original" (the untouched uploaded file) is always first, followed by
+  // whichever downscaled renditions actually got generated for this job.
+  qualities: string[];
 }
 
 export interface TeamPlayerSummary {
@@ -353,4 +369,37 @@ export interface PlayerRadarOut {
   name: string;
   videos_with_data: number;
   radar: RadarPoint[];
+}
+
+export interface AuthStatus {
+  enabled: boolean;
+  password_set: boolean;
+  // ISO timestamp of when login will auto-disable itself - null while
+  // login is off, or for a pre-existing config saved before this existed.
+  expires_at: string | null;
+}
+
+export interface Captcha {
+  captcha_id: string;
+  image_base64: string;
+}
+
+// A fresh strong password to preview - purely a suggestion, nothing is
+// saved server-side until it's actually submitted via authSetPassword.
+export interface SuggestedPassword {
+  password: string;
+}
+
+export interface PortStatus {
+  port: number;
+  status: "open" | "error" | "not_forwarded";
+}
+
+export interface ShareStatus {
+  upnp_enabled: boolean;
+  external_ip: string | null;
+  local_ip: string;
+  ports: PortStatus[];
+  share_url: string;
+  last_error: string | null;
 }

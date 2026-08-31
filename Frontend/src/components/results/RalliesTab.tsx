@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import Accordion from "@mui/material/Accordion";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import AccordionSummary from "@mui/material/AccordionSummary";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import Chip from "@mui/material/Chip";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import PlaylistPlayIcon from "@mui/icons-material/PlaylistPlay";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
@@ -204,27 +208,49 @@ export function RalliesTab({ jobId, rallies, flatEvents, currentTime, onSeek, on
   const groups = groupByGame(rallies, score?.result?.games ?? []);
   const showGameHeaders = groups.length > 1 || groups[0]?.game !== null;
 
+  if (!showGameHeaders) {
+    return (
+      <Stack spacing={1.5}>
+        {groups[0].rallies.map((rally) => (
+          <RallyCard
+            key={rally.rally_index}
+            rally={rally}
+            events={flatEvents.filter((e) => e.rally_index === rally.rally_index)}
+            isCurrent={currentTime >= rally.start_time_s && currentTime <= rally.end_time_s}
+            winner={resolveWinner(rally.rally_index, score, matchup, teams)}
+            onSeek={onSeek}
+            onPlayAll={onPlayAll}
+          />
+        ))}
+      </Stack>
+    );
+  }
+
   return (
-    <Stack spacing={3}>
+    <Stack spacing={1.5}>
       {groups.map(({ game, rallies: groupRallies }) => (
-        <Stack key={game?.game_index ?? "ungrouped"} spacing={1.5}>
-          {showGameHeaders && (
+        <Accordion key={game?.game_index ?? "ungrouped"} defaultExpanded disableGutters>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
             <Typography variant="subtitle2" color="text.secondary">
-              {game ? `Game ${game.game_index + 1}` : "Other rallies"}
+              {game ? `Game ${game.game_index + 1}` : "Other rallies"} ({groupRallies.length})
             </Typography>
-          )}
-          {groupRallies.map((rally) => (
-            <RallyCard
-              key={rally.rally_index}
-              rally={rally}
-              events={flatEvents.filter((e) => e.rally_index === rally.rally_index)}
-              isCurrent={currentTime >= rally.start_time_s && currentTime <= rally.end_time_s}
-              winner={resolveWinner(rally.rally_index, score, matchup, teams)}
-              onSeek={onSeek}
-              onPlayAll={onPlayAll}
-            />
-          ))}
-        </Stack>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Stack spacing={1.5}>
+              {groupRallies.map((rally) => (
+                <RallyCard
+                  key={rally.rally_index}
+                  rally={rally}
+                  events={flatEvents.filter((e) => e.rally_index === rally.rally_index)}
+                  isCurrent={currentTime >= rally.start_time_s && currentTime <= rally.end_time_s}
+                  winner={resolveWinner(rally.rally_index, score, matchup, teams)}
+                  onSeek={onSeek}
+                  onPlayAll={onPlayAll}
+                />
+              ))}
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
       ))}
     </Stack>
   );

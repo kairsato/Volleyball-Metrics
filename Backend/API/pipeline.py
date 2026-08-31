@@ -171,6 +171,7 @@ def _phase_two(job_id: str, video_path: Path, output_path: Path):
 
     _run_stage(job_id, "dashboard", video_path, output_path)
     _run_stage(job_id, "rendering", video_path, output_path)
+    _run_stage(job_id, "transcoding", video_path, output_path)
 
 
 def start_phase_one(job_id: str):

@@ -1,12 +1,26 @@
 import json
 import mimetypes
+import sys
+from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 
 from .. import action_quality, calibration, config, teams
 from ..jobs import store
-from ..schemas import ActionQualityOut, MatchupOut, RallyOut, ResultsOut
+from ..schemas import ActionQualityOut, MatchupOut, QualitiesOut, RallyOut, ResultsOut
+
+# Same "add Analysis's own dir to sys.path, import its subpackages as
+# top-level" pattern calibration.py already uses - keeps TRANSCODE_TIERS'
+# definition in one place (transcode.py) instead of duplicating it here.
+BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+ANALYSIS_DIR = BACKEND_DIR / "Analysis"
+for _directory in (BACKEND_DIR, ANALYSIS_DIR):
+    if str(_directory) not in sys.path:
+        sys.path.insert(0, str(_directory))
+
+from PostProcessing.transcode import TRANSCODE_TIERS, rendition_filename  # noqa: E402
 
 router = APIRouter(prefix="/api/jobs/{job_id}", tags=["results"])
 
@@ -108,8 +122,17 @@ async def get_dashboard(job_id: str):
 
 
 @router.get("/source")
-async def get_source_video(job_id: str):
+async def get_source_video(job_id: str, quality: Optional[str] = None):
     _require_job(job_id)
+
+    # quality=None (or "original", or a tier that was never generated - a
+    # short source, a still-processing job, a job from before this existed)
+    # all fall back to the untouched original file, exactly like before this
+    # param existed - existing callers that never pass it are unaffected.
+    if quality and quality in TRANSCODE_TIERS:
+        rendition_file = config.output_dir(job_id) / rendition_filename(quality)
+        if rendition_file.exists():
+            return FileResponse(rendition_file, media_type="video/mp4", filename=rendition_file.name)
 
     video_file = config.find_input_video(job_id)
     if video_file is None:
@@ -117,6 +140,14 @@ async def get_source_video(job_id: str):
 
     media_type = mimetypes.guess_type(video_file.name)[0] or "application/octet-stream"
     return FileResponse(video_file, media_type=media_type, filename=video_file.name)
+
+
+@router.get("/qualities", response_model=QualitiesOut)
+async def get_qualities(job_id: str):
+    _require_job(job_id)
+    output_dir = config.output_dir(job_id)
+    generated = [tier for tier in TRANSCODE_TIERS if (output_dir / rendition_filename(tier)).exists()]
+    return QualitiesOut(qualities=["original", *generated])
 
 
 @router.get("/video")

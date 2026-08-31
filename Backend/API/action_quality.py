@@ -225,6 +225,15 @@ def _instance(action: dict, team: Optional[str], factors: dict[str, Optional[flo
         "team": team,
         "factors": factors,
         "overall_score": _weighted_score(factors, weights),
+        # Raw values behind a couple of the factors above (contact point,
+        # elapsed time since the previous touch, ball height at contact) -
+        # exposed alongside the normalized 0-1 factors so a UI can show a
+        # real position/number, not just a percentage. See CalibrationPanel/
+        # CourtDiagram's own metre-based court coordinates for the same
+        # (x, y) convention ball_court uses.
+        "ball_court": action.get("ball_court"),
+        "time_since_prev_touch_s": action.get("time_since_prev_touch_s"),
+        "ball_height_m": action.get("ball_height_m"),
     }
 
 
@@ -437,9 +446,17 @@ def compute_action_quality(job_id: str, output_path: Path) -> dict:
         "job_id": job_id,
         "teams_available": bool(team_by_id),
         "height_available": bool(frames),
-        "serve": {"weights": SERVE_WEIGHTS, **_summarize(serve_instances)},
-        "receive": {"weights": RECEIVE_WEIGHTS, **_summarize(receive_instances)},
-        "set": {"weights": SET_WEIGHTS, **_summarize(set_instances)},
-        "spike": {"weights": SPIKE_WEIGHTS, **_summarize(spike_instances)},
+        "serve": {"weights": SERVE_WEIGHTS, "reference": {}, **_summarize(serve_instances)},
+        "receive": {"weights": RECEIVE_WEIGHTS, "reference": {}, **_summarize(receive_instances)},
+        # The only category with a genuine "ideal" target on both of two
+        # factors at once (height AND time) worth surfacing to a UI (e.g.
+        # the Set court map) - so this is the one category that gets a
+        # populated reference dict; the others default to {} via the
+        # schema instead of every _score_* function needing to know about it.
+        "set": {"weights": SET_WEIGHTS, "reference": {
+            "height_ideal_m": SET_HEIGHT_IDEAL_M,
+            "time_reference_s": SET_TIME_REFERENCE_S,
+        }, **_summarize(set_instances)},
+        "spike": {"weights": SPIKE_WEIGHTS, "reference": {}, **_summarize(spike_instances)},
         "caveats": CAVEATS,
     }

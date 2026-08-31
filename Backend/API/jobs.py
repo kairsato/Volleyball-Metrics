@@ -19,7 +19,7 @@ PHASE_ONE_STAGES = [
     "game_status",
     "action_detection",
 ]
-PHASE_TWO_STAGES = ["consolidating", "dashboard", "rendering"]
+PHASE_TWO_STAGES = ["consolidating", "dashboard", "rendering", "transcoding"]
 ALL_STAGES = PHASE_ONE_STAGES + PHASE_TWO_STAGES
 
 STATUS_UPLOADED = "uploaded"

@@ -208,6 +208,15 @@ class RallyOut(BaseModel):
     duration_s: float
 
 
+class QualitiesOut(BaseModel):
+    # "original" (the untouched uploaded file) is always first, followed by
+    # whichever downscaled renditions actually got generated (see
+    # transcode.py's TRANSCODE_TIERS/generate_renditions) - never includes a
+    # tier that wasn't actually produced (source too small, job predates
+    # this feature, transcoding failed).
+    qualities: list[str]
+
+
 class ResultsOut(BaseModel):
     job_id: str
     players: dict[str, PlayerStat]
@@ -349,6 +358,15 @@ class ActionQualityInstanceOut(BaseModel):
     # Weighted average of `factors` (see action_quality._weighted_score) -
     # None only when every single factor was unavailable.
     overall_score: Optional[float] = None
+    # Raw values a couple of the factors above are derived from - (x, y)
+    # metres, same convention as CalibrationPointsOut's court geometry, net
+    # at x=9.0 (action_quality.NET_X_M). None under the same conditions the
+    # corresponding factor is None (no ball_court reading, no camera pose,
+    # etc.) - a UI wanting an actual position/number (e.g. a court map)
+    # reads these instead of the normalized 0-1 factor.
+    ball_court: Optional[list[float]] = None
+    time_since_prev_touch_s: Optional[float] = None
+    ball_height_m: Optional[float] = None
 
 
 class ActionQualityPlayerOut(BaseModel):
@@ -363,6 +381,12 @@ class ActionQualityCategoryOut(BaseModel):
     # SET_WEIGHTS/SPIKE_WEIGHTS) - surfaced so a UI can label which factors
     # contributed and how much, not just show a bare percentage.
     weights: dict[str, float]
+    # Fixed "ideal" values a UI can compare a raw instance value against
+    # (e.g. Set's {"height_ideal_m": 3.0, "time_reference_s": 1.5}) -
+    # mirrors action_quality.py's own reference constants so the frontend
+    # never has to hardcode a number that could drift from them. Empty for
+    # every category without a meaningful single "ideal" to show.
+    reference: dict[str, float] = {}
     count: int
     average_score: Optional[float] = None
     players: list[ActionQualityPlayerOut] = []
@@ -427,3 +451,58 @@ class PlayerRadarOut(BaseModel):
     name: str
     videos_with_data: int
     radar: list[RadarPointOut] = []
+
+
+class AuthStatusOut(BaseModel):
+    enabled: bool
+    password_set: bool
+    # ISO timestamp of when login will auto-disable itself (see
+    # auth.check_share_expired) - None while login is off, or for a config
+    # saved before this field existed.
+    expires_at: Optional[str] = None
+
+
+class CaptchaOut(BaseModel):
+    captcha_id: str
+    image_base64: str
+
+
+class LoginIn(BaseModel):
+    password: str
+    captcha_id: str
+    captcha_answer: str
+
+
+class LoginOut(BaseModel):
+    token: str
+
+
+class SetPasswordIn(BaseModel):
+    password: str
+
+
+class SetEnabledIn(BaseModel):
+    enabled: bool
+
+
+class SuggestedPasswordOut(BaseModel):
+    # A fresh strong password to preview - purely a suggestion, nothing is
+    # saved server-side until the user actually submits it via /set-password.
+    password: str
+
+
+class PortStatusOut(BaseModel):
+    port: int
+    # "open" (UPnP mapped this port), "error" (UPnP is on but this specific
+    # port failed to map), or "not_forwarded" (UPnP is off - may still be
+    # reachable if forwarded manually, we just didn't do it).
+    status: str
+
+
+class ShareStatusOut(BaseModel):
+    upnp_enabled: bool
+    external_ip: Optional[str] = None
+    local_ip: str
+    ports: list[PortStatusOut]
+    share_url: str
+    last_error: Optional[str] = None

@@ -24,6 +24,7 @@ from ActionDetection.actionDetection import detectActions  # noqa: E402
 from PostProcessing.consolidate import consolidateStats  # noqa: E402
 from PostProcessing.renderVideo import renderAnnotatedVideo  # noqa: E402
 from PostProcessing.generate_dashboard import generateDashboard  # noqa: E402
+from PostProcessing.transcode import generate_renditions  # noqa: E402
 from API.players import recalibrate_players, write_grouped_actions  # noqa: E402
 
 
@@ -54,6 +55,10 @@ STAGE_FUNCS = {
     "consolidating": lambda video, output: _consolidate_with_groups(output),
     "dashboard": lambda video, output: generateDashboard(output),
     "rendering": lambda video, output: renderAnnotatedVideo(video, output),
+    # Best-effort by design (see transcode.py's module docstring) - never
+    # raises, so a transcode failure can't fail the job the way every other
+    # stage here still can.
+    "transcoding": lambda video, output: generate_renditions(video, output),
 }
 
 

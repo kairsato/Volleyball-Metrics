@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 // tracking progress through.
 export const PHASE_ONE_STAGES = ["player_tracking", "ball_detection", "game_status", "action_detection"];
 
-export const PHASE_TWO_STAGES = ["consolidating", "dashboard", "rendering"];
+export const PHASE_TWO_STAGES = ["consolidating", "dashboard", "rendering", "transcoding"];
 
 export const STAGE_LABELS: Record<string, string> = {
   player_tracking: "Player tracking",
@@ -22,6 +22,7 @@ export const STAGE_LABELS: Record<string, string> = {
   consolidating: "Consolidating stats",
   dashboard: "Generating dashboard",
   rendering: "Rendering annotated video",
+  transcoding: "Generating quality renditions",
 };
 
 export function phaseOneComplete(completedStages: string[]): boolean {

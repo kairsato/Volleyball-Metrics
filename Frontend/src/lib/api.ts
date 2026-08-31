@@ -1,6 +1,8 @@
 import type {
   ActionQualityOut,
+  AuthStatus,
   CalibrationPointsOut,
+  Captcha,
   Job,
   MatchupOut,
   NamesUpdateOut,
@@ -8,12 +10,15 @@ import type {
   Point,
   PlayerRadarOut,
   PlayersListOut,
+  QualitiesOut,
   ResultsOut,
   RosterOut,
   ScoreConfig,
   ScoreMethod,
   ScoreOut,
   ScoreResult,
+  ShareStatus,
+  SuggestedPassword,
   TeamRosterOut,
   TeamStatsOut,
 } from "./types";
@@ -27,19 +32,72 @@ import type {
 // genuinely lives somewhere else (a separate host/port from the frontend).
 const API_BASE = import.meta.env.VITE_API_BASE ?? `http://${window.location.hostname}:8000`;
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, init);
+// Only ever meaningful once login has actually been turned on (see
+// auth.py's module docstring) - reading/writing this is always safe even
+// then, since AuthMiddleware just ignores a missing/stale token when
+// login is off.
+const AUTH_TOKEN_KEY = "vva_auth_token";
 
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const body = await res.json();
-      detail = body.detail ?? detail;
-    } catch {
-      // response wasn't JSON - fall back to the status text
-    }
-    throw new Error(detail);
+function getAuthToken(): string | null {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch {
+    return null;
   }
+}
+
+function setAuthToken(token: string | null) {
+  try {
+    if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+    else localStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch {
+    // localStorage unavailable (private browsing, etc.) - login just won't
+    // persist across a reload, but the current session still works.
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// For the handful of endpoints loaded as a plain <img>/<video> src rather
+// than through fetch() - those can't carry a custom Authorization header,
+// so the same token travels as a query param instead (AuthMiddleware
+// accepts either - see main.py).
+function withAuthQuery(url: string): string {
+  const token = getAuthToken();
+  if (!token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
+async function handleErrorResponse(res: Response): Promise<never> {
+  if (res.status === 401) {
+    // The stored token is gone or expired - drop it and let whoever's
+    // listening (LoginGate) fall back to the login screen, rather than
+    // every call site having to check for this individually.
+    setAuthToken(null);
+    window.dispatchEvent(new Event("auth:unauthorized"));
+  }
+
+  let detail = res.statusText;
+  try {
+    const body = await res.json();
+    detail = body.detail ?? detail;
+  } catch {
+    // response wasn't JSON - fall back to the status text
+  }
+  throw new Error(detail);
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...authHeaders(), ...(init?.headers ?? {}) },
+  });
+
+  if (!res.ok) return handleErrorResponse(res);
 
   return res.json() as Promise<T>;
 }
@@ -85,22 +143,13 @@ export const api = {
   },
 
   async deleteJob(jobId: string): Promise<void> {
-    const res = await fetch(`${API_BASE}/api/jobs/${jobId}`, { method: "DELETE" });
-    if (!res.ok) {
-      let detail = res.statusText;
-      try {
-        const body = await res.json();
-        detail = body.detail ?? detail;
-      } catch {
-        // response wasn't JSON - fall back to the status text
-      }
-      throw new Error(detail);
-    }
+    const res = await fetch(`${API_BASE}/api/jobs/${jobId}`, { method: "DELETE", headers: authHeaders() });
+    if (!res.ok) await handleErrorResponse(res);
   },
 
   async getCalibrationFrame(jobId: string): Promise<string> {
-    const res = await fetch(`${API_BASE}/api/jobs/${jobId}/calibration/frame`);
-    if (!res.ok) throw new Error("Failed to load calibration frame");
+    const res = await fetch(`${API_BASE}/api/jobs/${jobId}/calibration/frame`, { headers: authHeaders() });
+    if (!res.ok) await handleErrorResponse(res);
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
@@ -224,8 +273,8 @@ export const api = {
 
   async getScoreFrame(jobId: string, timestampS?: number): Promise<string> {
     const query = timestampS !== undefined ? `?t=${timestampS}` : "";
-    const res = await fetch(`${API_BASE}/api/jobs/${jobId}/score/frame${query}`);
-    if (!res.ok) throw new Error("Failed to load frame");
+    const res = await fetch(`${API_BASE}/api/jobs/${jobId}/score/frame${query}`, { headers: authHeaders() });
+    if (!res.ok) await handleErrorResponse(res);
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
@@ -297,18 +346,91 @@ export const api = {
   },
 
   dashboardUrl(jobId: string): string {
-    return `${API_BASE}/api/jobs/${jobId}/dashboard`;
+    return withAuthQuery(`${API_BASE}/api/jobs/${jobId}/dashboard`);
   },
 
   videoUrl(jobId: string): string {
-    return `${API_BASE}/api/jobs/${jobId}/video`;
+    return withAuthQuery(`${API_BASE}/api/jobs/${jobId}/video`);
   },
 
-  sourceVideoUrl(jobId: string): string {
-    return `${API_BASE}/api/jobs/${jobId}/source`;
+  // `quality` is one of QualitiesOut.qualities ("original" or a generated
+  // tier like "720p") - omitted or unrecognized falls back to the original
+  // file server-side, so this is safe to call exactly as before too.
+  sourceVideoUrl(jobId: string, quality?: string): string {
+    const query = quality && quality !== "original" ? `?quality=${encodeURIComponent(quality)}` : "";
+    return withAuthQuery(`${API_BASE}/api/jobs/${jobId}/source${query}`);
+  },
+
+  getQualities(jobId: string): Promise<QualitiesOut> {
+    return request<QualitiesOut>(`/api/jobs/${jobId}/qualities`);
   },
 
   thumbnailUrl(jobId: string): string {
-    return `${API_BASE}/api/jobs/${jobId}/thumbnail`;
+    return withAuthQuery(`${API_BASE}/api/jobs/${jobId}/thumbnail`);
+  },
+
+  // --- Auth ---
+
+  authStatus(): Promise<AuthStatus> {
+    return request<AuthStatus>("/api/auth/status");
+  },
+
+  authGetCaptcha(): Promise<Captcha> {
+    return request<Captcha>("/api/auth/captcha");
+  },
+
+  async authLogin(password: string, captchaId: string, captchaAnswer: string): Promise<void> {
+    const { token } = await request<{ token: string }>("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password, captcha_id: captchaId, captcha_answer: captchaAnswer }),
+    });
+    setAuthToken(token);
+  },
+
+  async authLogout(): Promise<void> {
+    await request("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    setAuthToken(null);
+    // Distinct from "auth:unauthorized" (fired only on a real 401, which can
+    // only happen while login is actually enabled) - this fires on every
+    // logout click regardless, so the listener has to re-check status
+    // itself rather than assuming a login screen is warranted.
+    window.dispatchEvent(new Event("auth:logout"));
+  },
+
+  authSetPassword(password: string): Promise<AuthStatus> {
+    return request<AuthStatus>("/api/auth/set-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+  },
+
+  authSetEnabled(enabled: boolean): Promise<AuthStatus> {
+    return request<AuthStatus>("/api/auth/enable", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+  },
+
+  // Pure preview - generates a fresh strong password without saving
+  // anything; authSetPassword is what actually commits it.
+  authSuggestPassword(): Promise<SuggestedPassword> {
+    return request<SuggestedPassword>("/api/auth/generate-password");
+  },
+
+  // --- Share ---
+
+  shareStatus(): Promise<ShareStatus> {
+    return request<ShareStatus>("/api/share/status");
+  },
+
+  enableUpnp(): Promise<ShareStatus> {
+    return request<ShareStatus>("/api/share/upnp/enable", { method: "POST" });
+  },
+
+  disableUpnp(): Promise<ShareStatus> {
+    return request<ShareStatus>("/api/share/upnp/disable", { method: "POST" });
   },
 };
