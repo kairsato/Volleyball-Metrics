@@ -2,8 +2,6 @@
 
 # Volleyball Metrics
 
-**Turn a raw volleyball match recording into player stats, team analytics, and an annotated video — automatic court calibration, player/ball tracking, rally segmentation, and action detection under the hood.**
-
 </div>
 
 <!--
@@ -33,26 +31,16 @@ This project builds directly on ideas and open datasets from:
 
 </details>
 
-## Why I'm building this
+## What it gives you
 
-- Give teams and individual players a free, accurate way to see how they're actually performing, not just a highlight reel.
-- Turn raw footage into the kind of per-player and per-team analytics that used to require a paid platform or a manual stat-taker.
-- Keep improving detection accuracy over time by growing the labeled dataset behind each classifier (ball, action, court, game status) rather than shipping a model once and leaving it.
-- Do it in the open, on top of the open datasets and prior work that made it possible, and credit that work properly.
-- Prove that this doesn't need to cost a subscription — a decent GPU and an evening of setup should be enough.
-
-## What it does
-
-- **Court calibration** — click the four court corners and net points once; everything downstream (player positions, ball speed, court-relative stats) is computed in real court coordinates, not raw pixels.
-- **Player detection & tracking** — a YOLO detector plus a custom multi-tracker ensemble with appearance-based re-identification, so a player keeps their identity even after being briefly occluded or leaving the frame.
-- **Ball detection & speed** — a volleyball-specific fine-tuned detector tracks the ball and estimates its real-world speed.
-- **Game status / rally detection** — a fine-tuned video classifier segments the match into rallies vs. dead-ball stretches.
-- **Action detection** — classifies each touch by type (serve, set, spike, dig, block) and attributes it to a player.
-- **Player review** — name detected players from a reusable roster, merge duplicate detections, or ignore false positives (refs, coaches) — with a hint when two separate detections might be the same person.
-- **Scoring** — track which side won each rally and how rallies group into games, either by hand, automatically (inferred from ball/player position), or by reading a scoreboard on screen (OCR) — all correctable afterward.
-- **Teams** — group roster players into named teams (e.g. "Varsity") independent of any one video; a team's page rolls up its win/loss record, a win-rate-by-action radar, and hit-count stats across every video it's played in.
-- **Results page** — per video: an Overview tab (hit counts plus a weighted quality score for serve/receive/set/spike, factoring in speed, placement, and trajectory height), a Stats tab (win/loss record and win-rate radar), a Rallies tab (grouped by game, with the winner highlighted), an Actions tab (every detected touch, filterable), and a Setup tab (court calibration, player review, scoring).
-- **Annotated video & dashboard** — a rendered copy of the video with tracking overlays, plus a standalone HTML stats dashboard.
+- **Player positioning & movement** — see where each player tends to stand, cover, and move to over the course of a match, not just where they ended up.
+- **Set locations & serve/receive patterns** — where sets tend to go and how cleanly serve/receive is handled, rally after rally.
+- **Standout performances** — surfaces what individual players did well across the match, rolling up into a general MVP read instead of a gut feeling.
+- **Annotated video trajectories** — tracking overlays on the rendered video make it easy to follow one specific player, or the ball itself, through an entire rally.
+- **Match & game statistics** — win/loss records, hitting efficiency, unforced errors, and other game stats generated automatically instead of requiring a manual stat-taker.
+- **Court-relative metrics** — ball speed, jump height, and shot placement, computed in real court coordinates from a one-time court calibration rather than raw pixels.
+- **Team-level rollups** — win rate by action type and hit counts aggregated across every video a team has played, so trends show up over a season, not just one match.
+- **All of it for free, on your own hardware** — a decent GPU and an evening of setup instead of a per-seat subscription, built in the open on top of the datasets and prior work that made it possible.
 
 ## Frontend
 
@@ -115,7 +103,10 @@ Backend/
 
 Every fine-tuned model below is a **YOLOv8-format** dataset merged from one or more open [Roboflow Universe](https://universe.roboflow.com) datasets via `Backend/Analysis/MachineLearning/datasetGather.py`, then trained by `mainTrainingModels.py`. Full attribution is also shown in-app under **About**.
 
-**Ball detection** — YOLO11m, fine-tuned on ~2,260 images merged from 4 sources (all CC BY 4.0):
+<details>
+<summary><strong>Ball detection</strong></summary>
+
+YOLO11m, fine-tuned on ~2,260 images merged from 4 sources (all CC BY 4.0):
 
 - [aivolleyballref/volleyball_detection](https://universe.roboflow.com/aivolleyballref/volleyball_detection) — 771 images
 - [primaryws/volleyball_ball_object_detection_dataset](https://universe.roboflow.com/primaryws/volleyball_ball_object_detection_dataset) — 548 images
@@ -123,33 +114,46 @@ Every fine-tuned model below is a **YOLOv8-format** dataset merged from one or m
 - [volleyballtest/volleyball-fdqxb](https://universe.roboflow.com/volleyballtest/volleyball-fdqxb) — 820 images
 - **My own footage** — supplemented automatically: `BallDatasets.pseudo_label_own_footage()` turns my own already-processed matches' high-confidence ball detections into new training labels, so accuracy keeps improving the more I use the app.
 
-**Action detection** — trained from scratch for this project, on ~29,000 images merged from 4 sources (all CC BY 4.0):
+</details>
+
+<details>
+<summary><strong>Action detection</strong></summary>
+
+Trained from scratch for this project, on ~29,000 images merged from 4 sources (all CC BY 4.0):
 
 - [shukur-sabzaliev-zc3en/volleyball-activity-dataset](https://universe.roboflow.com/shukur-sabzaliev-zc3en/volleyball-activity-dataset) — 25,000 images, uploaded by [Shakhansho Sabzaliev](https://github.com/shukkkur) (VolleyVision), sourced from Graz University of Technology's [Volleyball Activity Dataset](https://www.tugraz.at/index.php?id=17751) (Austrian Volley League 2011/12)
 - [vbanalyzer/volleyball-action-recognition-k6tqv](https://universe.roboflow.com/vbanalyzer/volleyball-action-recognition-k6tqv) — 1,806 images
 - [vballactionrecognition/volleyball-action-recognition-7rnpb](https://universe.roboflow.com/vballactionrecognition/volleyball-action-recognition-7rnpb) — 1,003 images
 - [mikhail-klyukin/volleyball_dataset](https://universe.roboflow.com/mikhail-klyukin/volleyball_dataset) — 1,236 images
-- **My own footage** — not yet automated (see [Roadmap](#roadmap)); for now this class grows only through the open sources above.
+- **My own footage** — not yet automated for this model; for now this class grows only through the open sources above.
 
-**Court keypoints** — 862 images (CC BY 4.0):
+</details>
+
+<details>
+<summary><strong>Court keypoints</strong></summary>
+
+862 images (CC BY 4.0):
 
 - [primaryws/volleyball_court_keypoints_regression_dataset](https://universe.roboflow.com/primaryws/volleyball_court_keypoints_regression_dataset)
 - **My own footage** — supplemented automatically: `CourtDatasets.extract_own_footage_keypoints()` turns my own already-confirmed court calibrations into new labeled keypoint frames.
 
-**Game status / rally detection** — a [masouduut94/volleyball_analytics](https://github.com/masouduut94/volleyball_analytics) fine-tuned VideoMAE checkpoint, base model `MCG-NJU/videomae-base-finetuned-kinetics` (Hugging Face, CC-BY-NC-4.0 — non-commercial use only).
-- **My own footage** — not yet automated (see [Roadmap](#roadmap)); this stage currently relies solely on the fine-tuned checkpoint above.
+</details>
 
-**Player detection** — [Ultralytics YOLO](https://github.com/ultralytics/ultralytics) (AGPL-3.0 / commercial license); re-identification is a ResNet18 appearance encoder trained for this project.
+<details>
+<summary><strong>Game status / rally detection</strong></summary>
 
-## Roadmap
+A [masouduut94/volleyball_analytics](https://github.com/masouduut94/volleyball_analytics) fine-tuned VideoMAE checkpoint, base model `MCG-NJU/videomae-base-finetuned-kinetics` (Hugging Face, CC-BY-NC-4.0 — non-commercial use only).
 
-The single biggest lever on accuracy right now is dataset size, not architecture — every classifier above is trained on a few hundred to a few thousand labeled examples per class. Priorities, roughly in order:
+- **My own footage** — not yet automated for this model; this stage currently relies solely on the fine-tuned checkpoint above.
 
-- [ ] Grow the labeled action-detection set, especially underrepresented classes (block, dig) and lower-level/casual play (most existing data skews toward high-level matches).
-- [ ] Expand ball-detection training data with more occlusion, motion-blur, and indoor-lighting variety.
-- [ ] Add more court/net keypoint examples across camera angles and gym setups.
-- [ ] Reduce false-positive player detections from spectators/coaches near the court.
-- [ ] Package the model checkpoints as a downloadable release instead of a manual setup step.
+</details>
+
+<details>
+<summary><strong>Player detection</strong></summary>
+
+[Ultralytics YOLO](https://github.com/ultralytics/ultralytics) (AGPL-3.0 / commercial license); re-identification is a ResNet18 appearance encoder trained for this project.
+
+</details>
 
 ## Tech stack
 
@@ -196,10 +200,7 @@ Both bind to `0.0.0.0` rather than just `localhost`, so another device on the sa
 
 ## License
 
-<details>
-<summary>Show license details</summary>
-
-**Code** — original code in this repository is not currently under a published open-source license. All rights are reserved by default unless/until a license file is added; please ask before reusing or redistributing it.
+This project's code is licensed under the [MIT License](LICENSE).
 
 **Third-party licenses**, by component:
 
@@ -210,5 +211,3 @@ Both bind to `0.0.0.0` rather than just `localhost`, so another device on the sa
 | Player detection (Ultralytics YOLO) | AGPL-3.0, or a commercial Ultralytics license |
 
 See [Datasets & credits](#datasets--credits) above for the full per-dataset attribution.
-
-</details>
