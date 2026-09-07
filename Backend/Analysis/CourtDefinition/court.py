@@ -517,21 +517,23 @@ def create_half_court_homography(middle_left, middle_right, far_left, far_right)
 _FOCAL_LENGTH_SEARCH_FRACTIONS = np.linspace(0.5, 3.0, 60)
 
 
-def estimate_camera_pose(
+def camera_pose_candidates(
     middle_left, middle_right, far_left, far_right,
     net_top_left, net_top_right, net_height_m,
     frame_width, frame_height,
 ):
     """
-    Recovers the camera's 3D pose (intrinsics + extrinsics) from the 6
-    marked calibration points, by searching over candidate focal lengths and
-    keeping whichever gives the lowest reprojection error against a
-    cv2.solvePnP solve - see the module comment above for why this is
-    needed and its limits.
+    Every (K, rvec, tvec, reprojection_error_px) a cv2.solvePnP solve finds
+    across _FOCAL_LENGTH_SEARCH_FRACTIONS' candidate focal lengths - the full
+    search space estimate_camera_pose below picks its single best-
+    reprojection answer from.
 
-    Returns (K, rvec, tvec, reprojection_error_px), or None if no candidate
-    focal length produced a valid solvePnP solution at all (e.g. degenerate/
-    near-identical marked points).
+    Exposed separately (rather than folded directly into
+    estimate_camera_pose) so a caller with an independent signal for which
+    candidate is actually right - see BallDetection.ballDetection.
+    refine_camera_pose_from_flight, which uses the ball's own physically-
+    known parabolic flight instead of reprojection error alone - can re-rank
+    this same search space instead of re-deriving it.
     """
     world_points = np.array([
         [COURT_LENGTH / 2, 0.0, 0.0],             # middle_left
@@ -548,7 +550,7 @@ def estimate_camera_pose(
 
     principal_point = (frame_width / 2.0, frame_height / 2.0)
 
-    best = None
+    candidates = []
     for focal_fraction in _FOCAL_LENGTH_SEARCH_FRACTIONS:
         focal_px = float(focal_fraction * frame_width)
         K = np.array([
@@ -566,10 +568,36 @@ def estimate_camera_pose(
         reprojected, _ = cv2.projectPoints(world_points, rvec, tvec, K, None)
         error_px = float(np.linalg.norm(reprojected.reshape(-1, 2) - image_points, axis=1).mean())
 
-        if best is None or error_px < best[3]:
-            best = (K, rvec, tvec, error_px)
+        candidates.append((K, rvec, tvec, error_px))
 
-    return best
+    return candidates
+
+
+def estimate_camera_pose(
+    middle_left, middle_right, far_left, far_right,
+    net_top_left, net_top_right, net_height_m,
+    frame_width, frame_height,
+):
+    """
+    Recovers the camera's 3D pose (intrinsics + extrinsics) from the 6
+    marked calibration points, by searching over candidate focal lengths and
+    keeping whichever gives the lowest reprojection error against a
+    cv2.solvePnP solve - see the module comment above for why this is
+    needed and its limits.
+
+    Returns (K, rvec, tvec, reprojection_error_px), or None if no candidate
+    focal length produced a valid solvePnP solution at all (e.g. degenerate/
+    near-identical marked points).
+    """
+    candidates = camera_pose_candidates(
+        middle_left, middle_right, far_left, far_right,
+        net_top_left, net_top_right, net_height_m,
+        frame_width, frame_height,
+    )
+    if not candidates:
+        return None
+
+    return min(candidates, key=lambda candidate: candidate[3])
 
 
 def world_to_camera(point_world, rvec, tvec):

@@ -8,7 +8,7 @@ import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Job } from "../lib/types";
 import { CalibrationPanel } from "../components/CalibrationPanel";
-import { LoadingSpinner } from "../components/LoadingSpinner";
+import { ToolPageSkeleton } from "../components/Skeletons";
 
 // Same viewport-fit approach as ResultsView.tsx/PlayerIdentificationPage.tsx/
 // ScoringDeterminationPage.tsx - the page itself never scrolls, only
@@ -56,7 +56,7 @@ export function CourtCalibrationPage({ onJobUpdated }: CourtCalibrationPageProps
 
   if (!jobId) return <Navigate to="/videos" replace />;
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
-  if (!job) return <LoadingSpinner />;
+  if (!job) return <ToolPageSkeleton />;
 
   if (job.status !== "complete") {
     return (

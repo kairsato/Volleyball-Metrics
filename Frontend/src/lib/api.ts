@@ -1,6 +1,7 @@
 import type {
   ActionQualityOut,
   AuthStatus,
+  BallTrajectory,
   CalibrationPointsOut,
   Captcha,
   Job,
@@ -10,17 +11,20 @@ import type {
   Point,
   PlayerRadarOut,
   PlayersListOut,
+  PlayerTrajectory,
   QualitiesOut,
   ResultsOut,
   RosterOut,
   ScoreConfig,
   ScoreMethod,
   ScoreOut,
+  ScoreRegionTestResult,
   ScoreResult,
   ShareStatus,
   SuggestedPassword,
   TeamRosterOut,
   TeamStatsOut,
+  WarmupConfig,
 } from "./types";
 
 // Derived from wherever this page was itself loaded from, rather than a
@@ -30,7 +34,21 @@ import type {
 // 127.0.0.1:8000, which resolves to THAT device's own loopback, not the
 // host serving the app. VITE_API_BASE still overrides this when the API
 // genuinely lives somewhere else (a separate host/port from the frontend).
-const API_BASE = import.meta.env.VITE_API_BASE ?? `http://${window.location.hostname}:8000`;
+//
+// Port 5173 specifically means "loaded straight from the Vite dev server"
+// (its own default port, see vite.config.ts) - there's no proxy in front of
+// it, so the backend has to be reached directly, cross-port, same as
+// before. Anything else - notably 443/no port at all - means this was
+// loaded through the Caddy reverse proxy (see ../../Caddyfile), which
+// already forwards /api/* to the backend from the SAME origin the page
+// came from. A relative base (same origin) is required there, not a
+// cross-port URL: the backend's own 8000 isn't even reachable from outside
+// the LAN once Share is on, since only 80/443 get forwarded to it (see
+// Backend/API/share.py's SHARE_PORTS) - and even on the LAN, a hardcoded
+// "http://" call from an https:// page would get blocked as mixed content.
+const API_BASE =
+  import.meta.env.VITE_API_BASE ??
+  (window.location.port === "5173" ? `${window.location.protocol}//${window.location.hostname}:8000` : "");
 
 // Only ever meaningful once login has actually been turned on (see
 // auth.py's module docstring) - reading/writing this is always safe even
@@ -103,10 +121,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  uploadVideo(file: File): Promise<Job> {
+  // One atomic request creates the whole job with every segment it will
+  // ever have - files[0] becomes segment 0 (the job's own
+  // original_filename/date_played), files[1:] become segments 1..N. See
+  // Backend/API/routers/jobs_router.py's upload_video for why there's no
+  // separate "add another video later" call.
+  uploadVideos(files: File[]): Promise<Job> {
     const form = new FormData();
-    form.append("file", file);
+    for (const file of files) form.append("files", file);
     return request<Job>("/api/jobs", { method: "POST", body: form });
+  },
+
+  setVideoDatePlayed(jobId: string, segmentId: string, datePlayed: string): Promise<Job> {
+    return request<Job>(`/api/jobs/${jobId}/videos/${segmentId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date_played: datePlayed }),
+    });
   },
 
   listJobs(): Promise<Job[]> {
@@ -215,6 +246,14 @@ export const api = {
     return request<ResultsOut>(`/api/jobs/${jobId}/results`);
   },
 
+  getBallTrajectory(jobId: string): Promise<BallTrajectory> {
+    return request<BallTrajectory>(`/api/jobs/${jobId}/ball-trajectory`);
+  },
+
+  getPlayerTrajectory(jobId: string): Promise<PlayerTrajectory> {
+    return request<PlayerTrajectory>(`/api/jobs/${jobId}/player-trajectory`);
+  },
+
   getMatchup(jobId: string): Promise<MatchupOut> {
     return request<MatchupOut>(`/api/jobs/${jobId}/matchup`);
   },
@@ -290,6 +329,7 @@ export const api = {
     teamYId: string | null,
     ocrRegion: OcrRegion | null,
     cvReverseDirection: boolean,
+    ocrMinConfidence: number,
   ): Promise<ScoreConfig> {
     return request<ScoreConfig>(`/api/jobs/${jobId}/score/config`, {
       method: "PUT",
@@ -300,6 +340,7 @@ export const api = {
         team_y_id: teamYId,
         ocr_region: ocrRegion,
         cv_reverse_direction: cvReverseDirection,
+        ocr_min_confidence: ocrMinConfidence,
       }),
     });
   },
@@ -309,6 +350,19 @@ export const api = {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirmed }),
+    });
+  },
+
+  testScoreRegion(
+    jobId: string,
+    timestampS: number,
+    region: OcrRegion,
+    minConfidence: number,
+  ): Promise<ScoreRegionTestResult> {
+    return request<ScoreRegionTestResult>(`/api/jobs/${jobId}/score/test-region`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ t: timestampS, region, min_confidence: minConfidence }),
     });
   },
 
@@ -343,6 +397,34 @@ export const api = {
 
   resetScores(jobId: string): Promise<ScoreResult> {
     return request<ScoreResult>(`/api/jobs/${jobId}/score/reset`, { method: "POST" });
+  },
+
+  getWarmup(jobId: string): Promise<WarmupConfig> {
+    return request<WarmupConfig>(`/api/jobs/${jobId}/warmup`);
+  },
+
+  async getWarmupFrame(jobId: string, timestampS?: number): Promise<string> {
+    const query = timestampS !== undefined ? `?t=${timestampS}` : "";
+    const res = await fetch(`${API_BASE}/api/jobs/${jobId}/warmup/frame${query}`, { headers: authHeaders() });
+    if (!res.ok) await handleErrorResponse(res);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  },
+
+  saveWarmup(jobId: string, startS: number, endS: number | null): Promise<WarmupConfig> {
+    return request<WarmupConfig>(`/api/jobs/${jobId}/warmup`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start_s: startS, end_s: endS }),
+    });
+  },
+
+  setWarmupConfirmed(jobId: string, confirmed: boolean): Promise<WarmupConfig> {
+    return request<WarmupConfig>(`/api/jobs/${jobId}/warmup/confirm`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed }),
+    });
   },
 
   dashboardUrl(jobId: string): string {
@@ -406,11 +488,13 @@ export const api = {
     });
   },
 
-  authSetEnabled(enabled: boolean): Promise<AuthStatus> {
+  // durationDays: how many days until Share auto-disables itself - null for
+  // "Forever" (never auto-expires). Ignored by the backend when disabling.
+  authSetEnabled(enabled: boolean, durationDays: number | null = 7): Promise<AuthStatus> {
     return request<AuthStatus>("/api/auth/enable", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ enabled, duration_days: durationDays }),
     });
   },
 
@@ -432,5 +516,13 @@ export const api = {
 
   disableUpnp(): Promise<ShareStatus> {
     return request<ShareStatus>("/api/share/upnp/disable", { method: "POST" });
+  },
+
+  setHostname(hostname: string | null): Promise<ShareStatus> {
+    return request<ShareStatus>("/api/share/hostname", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hostname }),
+    });
   },
 };

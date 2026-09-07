@@ -171,6 +171,7 @@ def court_keypoint_datasets() -> Path:
             court_datasets.download_primaryws(ROBOFLOW_API_KEY),
             court_datasets.PRIMARYWS_KEEP_INDICES, "primaryws",
         ),
+        court_datasets.extract_own_footage_keypoints(),
     ]
     return court_datasets.build_pose_dataset(remapped_sources)
 

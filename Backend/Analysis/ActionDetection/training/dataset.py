@@ -1,27 +1,26 @@
-"""PyTorch dataset for the Ibrahim et al. Volleyball dataset
-(https://github.com/mostafa-saad/deep-activity-rec), specifically its
-per-frame player tracking annotations (the `volleyball_tracking_annotation`
-archive) paired with that clip's frame images. One sample = one labeled,
-non-lost player box, cropped from its frame.
+"""Shared vocabulary + parsing helpers for the per-player action classifier's
+training data. Two kinds of sources feed it (see
+MachineLearning/datasetGather.py's ActionDatasets class):
 
-Directory layout expected on disk, matching how the dataset actually ships:
-    <annotations_root>/<video_id>/<clip_id>/<clip_id>.txt
-    <images_root>/<video_id>/<clip_id>/<frame_id>.jpg
+- The Ibrahim et al. Volleyball dataset (https://github.com/mostafa-saad/deep-activity-rec),
+  specifically its per-frame player tracking annotations (the
+  `volleyball_tracking_annotation` archive) paired with that clip's frame
+  images - parse_annotation_file/index_clips below know that format.
+- Several Roboflow Universe bounding-box datasets, each with their own class
+  vocabulary - handled directly in ActionDatasets since their format (YOLO
+  images/+labels/+data.yaml) doesn't need clip/frame indexing like Ibrahim's
+  does.
 
-annotations_root and images_root are separate archives from the same
-dataset (see the repo's README) and don't need to cover the same set of
-clips - only clips present in both contribute samples, so this also works
-against a partial image set (e.g. a small sample subset) without any
-special-casing.
+Both kinds ultimately produce the same thing: individual player crops
+labeled with one of APP_ACTION_CLASSES, merged into one ImageFolder-style
+directory by ActionDatasets.build_train_val_split for training/train.py to
+consume.
 """
 
 from pathlib import Path
 
-import cv2
-import numpy as np
-from torch.utils.data import Dataset
-
-# The dataset's own 9-class per-player vocabulary (see the repo's README).
+# The Ibrahim et al. dataset's own 9-class per-player vocabulary (see the
+# repo's README).
 ACTION_LABELS = [
     "waiting", "setting", "digging", "falling", "spiking",
     "blocking", "jumping", "moving", "standing",
@@ -29,19 +28,29 @@ ACTION_LABELS = [
 LABEL_TO_INDEX = {label: i for i, label in enumerate(ACTION_LABELS)}
 
 # How that vocabulary maps onto this app's own action_type values (see
-# Backend/PostProcessed/consolidate.py's ACTION_TYPES). There's no "serve"
+# Backend/PostProcessing/consolidate.py's ACTION_TYPES). There's no "serve"
 # label here - serve is a game-state/event thing, not a per-player pose, so
-# it's handled separately. States like waiting/standing/moving/jumping/
-# falling aren't ball-touch actions at all: actionDetection.py only asks
-# "what action was this" on frames it already knows from ball trajectory
-# were a touch, so a classifier trained on this vocabulary only ever needs
-# to disambiguate among the four real touch types below at inference time.
+# it's detected separately by actionDetection.py's own timing rule. States
+# like waiting/standing/moving/jumping/falling aren't ball-touch actions at
+# all: actionDetection.py only asks "what action was this" on frames it
+# already knows from ball trajectory were a touch, so a classifier trained
+# on this vocabulary only ever needs to disambiguate among the four real
+# touch types below at inference time.
 TO_APP_ACTION_TYPE = {
     "setting": "set",
     "digging": "dig",
     "spiking": "spike",
     "blocking": "block",
 }
+
+# The classifier's actual output vocabulary - every training source (Ibrahim
+# and each Roboflow source's own CLASS_MAPS in datasetGather.ActionDatasets)
+# maps its own labels onto these 4 and drops everything else. Sorted alphabetically to
+# match torchvision.datasets.ImageFolder's own class-to-index ordering
+# (it always sorts folder names), so a checkpoint's saved `classes` list
+# and a fresh ImageFolder built from the same directory layout never
+# disagree on which index means what.
+APP_ACTION_CLASSES = sorted(set(TO_APP_ACTION_TYPE.values()))
 
 
 def parse_annotation_file(path: Path):
@@ -81,56 +90,3 @@ def index_clips(root: Path):
             if ann_file.exists():
                 clips.append((video_dir.name, clip_dir.name, clip_dir, ann_file))
     return clips
-
-
-class PlayerActionCrops(Dataset):
-    def __init__(self, annotations_root, images_root, transform=None, skip_generated=True):
-        self.transform = transform
-        self.samples = []
-
-        annotations_root = Path(annotations_root)
-        images_root = Path(images_root)
-
-        for video_id, _clip_id, _ann_clip_dir, ann_file in index_clips(annotations_root):
-            image_dir = images_root / video_id / ann_file.parent.name
-            if not image_dir.exists():
-                continue
-
-            for entry in parse_annotation_file(ann_file):
-                if entry["lost"]:
-                    continue
-                if skip_generated and entry["generated"]:
-                    continue
-                if entry["label"] not in LABEL_TO_INDEX:
-                    continue
-
-                image_path = image_dir / f"{entry['frame_id']}.jpg"
-                if not image_path.exists():
-                    continue
-
-                self.samples.append({**entry, "image_path": image_path})
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, index):
-        sample = self.samples[index]
-        image = cv2.imread(str(sample["image_path"]))
-        if image is None:
-            raise FileNotFoundError(sample["image_path"])
-
-        h, w = image.shape[:2]
-        x1, y1, x2, y2 = sample["box"]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        crop = image[y1:y2, x1:x2]
-
-        if crop.size == 0:
-            crop = np.zeros((8, 8, 3), dtype=np.uint8)
-
-        crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-
-        if self.transform:
-            crop = self.transform(crop)
-
-        return crop, LABEL_TO_INDEX[sample["label"]]

@@ -19,17 +19,24 @@ PLAYER_CONFIG_NAME = "player_config.json"
 THUMBNAIL_MAX_DIM = 220
 JPEG_QUALITY = 85
 # Bumped whenever a change would make an already-cached thumbnail wrong even
-# though its frame_idx hasn't changed (e.g. adding the "outline other people
-# in frame" overlay below) - a cache entry stamped with an older version is
-# treated as a miss and regenerated once, rather than serving a stale
-# thumbnail indefinitely.
-THUMBNAIL_CACHE_VERSION = 2
+# though its frame_idx hasn't changed (e.g. reworking the spotlight overlay
+# below) - a cache entry stamped with an older version is treated as a miss
+# and regenerated once, rather than serving a stale thumbnail indefinitely.
+THUMBNAIL_CACHE_VERSION = 4
 
 # A detector's box is often a touch tight around the actual person - pad it
 # outward proportionally (same fraction for everyone, so crops stay
 # consistent) rather than cropping exactly to the box, which regularly
 # clips the top of someone's head or their feet.
 THUMBNAIL_PADDING_FRACTION = 0.18
+
+# How many of a stable_id's best-ranked candidate appearances (see
+# _ranked_candidates_per_player) are actually worth decoding and scoring for
+# motion blur when picking its thumbnail. Comparing every appearance a
+# player has across a whole video would make an uncached thumbnail request
+# far too slow - this keeps it to a handful of already-good (unclipped,
+# same conflict tier, similarly-sized) candidates.
+BLUR_CANDIDATE_COUNT = 6
 
 
 def _box_area(box: list[float]) -> float:
@@ -85,128 +92,235 @@ def _frame_size(video_path: Path) -> Optional[tuple[float, float]]:
         cap.release()
 
 
-def _best_crop_per_player(positions: list[dict], frame_size: Optional[tuple[float, float]] = None) -> dict[int, dict]:
-    """For each stable_id, pick the frame/box to use as its thumbnail: the
-    largest box among the ones that plausibly look like a real, unclipped
-    person, falling back to the largest box overall if none do (so a
-    thumbnail is always produced). Plain "largest box wins" alone
-    occasionally picks a spurious detection - a fused box, a shadow, a
-    sideline ad board - that happens to be big, producing a thumbnail with
-    no player in it; the plausibility filter above is what catches that."""
-    best: dict[int, dict] = {}
-    best_plausible: dict[int, dict] = {}
+def _padded_box(box: list[float]) -> tuple[float, float, float, float]:
+    x1, y1, x2, y2 = box
+    pad_x = (x2 - x1) * THUMBNAIL_PADDING_FRACTION
+    pad_y = (y2 - y1) * THUMBNAIL_PADDING_FRACTION
+    return x1 - pad_x, y1 - pad_y, x2 + pad_x, y2 + pad_y
+
+
+def _boxes_intersect(a: tuple[float, float, float, float], b: list[float]) -> bool:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    return ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2
+
+
+def _has_conflict(box: list[float], other_boxes: list[list[float]]) -> bool:
+    """Whether some other player's raw box falls inside the (padded) region
+    that will actually be cropped out for `box`'s thumbnail - i.e. whether
+    that other person would visibly appear alongside the subject in the
+    thumbnail, making it ambiguous who's being shown without a highlight."""
+    padded = _padded_box(box)
+    return any(_boxes_intersect(padded, other) for other in other_boxes)
+
+
+def _ranked_candidates_per_player(
+    positions: list[dict], frame_size: Optional[tuple[float, float]] = None
+) -> dict[int, list[dict]]:
+    """For each stable_id, every appearance that plausibly looks like a
+    real, unclipped person (falling back to every appearance at all if none
+    do, so a thumbnail is always produced - see _is_plausible_person_box),
+    ranked best-first: appearances with no other player's box crowding into
+    the thumbnail crop first, largest box within that tier next. Plain
+    "largest box wins" alone occasionally picks a spurious detection - a
+    fused box, a shadow, a sideline ad board - that happens to be big; the
+    plausibility filter is what catches that. The actual thumbnail source is
+    then picked from the front of this ranking by _pick_best_source, which
+    additionally screens the top candidates for motion blur."""
+    plausible: dict[int, list[dict]] = {}
+    fallback: dict[int, list[dict]] = {}
     appearances: dict[int, int] = {}
 
     for entry in positions:
         frame_idx = entry["frame_idx"]
         timestamp_s = entry.get("timestamp_s")
-        for player in entry["players"]:
+        frame_players = entry["players"]
+        for player in frame_players:
             stable_id = player["stable_id"]
             appearances[stable_id] = appearances.get(stable_id, 0) + 1
 
             box = player["box"]
-            area = _box_area(box)
-            record = {"frame_idx": frame_idx, "timestamp_s": timestamp_s, "box": box, "area": area}
+            other_boxes = [other["box"] for other in frame_players if other is not player]
+            record = {
+                "frame_idx": frame_idx,
+                "timestamp_s": timestamp_s,
+                "box": box,
+                "area": _box_area(box),
+                "conflict": _has_conflict(box, other_boxes),
+            }
 
-            current = best.get(stable_id)
-            if current is None or area > current["area"]:
-                best[stable_id] = record
-
+            fallback.setdefault(stable_id, []).append(record)
             if _is_plausible_person_box(box, frame_size):
-                current_plausible = best_plausible.get(stable_id)
-                if current_plausible is None or area > current_plausible["area"]:
-                    best_plausible[stable_id] = record
+                plausible.setdefault(stable_id, []).append(record)
 
-    for stable_id in best:
-        chosen = best_plausible.get(stable_id, best[stable_id])
-        chosen["appearances"] = appearances[stable_id]
-        best[stable_id] = chosen
+    result: dict[int, list[dict]] = {}
+    for stable_id, records in fallback.items():
+        records = plausible.get(stable_id, records)
+        for record in records:
+            record["appearances"] = appearances[stable_id]
+        result[stable_id] = sorted(records, key=lambda r: (r["conflict"], -r["area"]))
 
-    return best
+    return result
+
+
+def _best_crop_per_player(positions: list[dict], frame_size: Optional[tuple[float, float]] = None) -> dict[int, dict]:
+    """The single best candidate per stable_id (see _ranked_candidates_per_
+    player) - for callers that just want one good, non-conflicting crop
+    (embed_player, auto_identify_from_gallery) and don't need the blur-aware
+    refinement list_players does for the user-facing thumbnail."""
+    return {stable_id: records[0] for stable_id, records in _ranked_candidates_per_player(positions, frame_size).items()}
+
+
+def _sharpness_score(crop_bgr: np.ndarray) -> float:
+    """Higher = less motion-blurred. Variance of the Laplacian is a standard
+    cheap blur proxy: a sharp image has lots of high-frequency edge content
+    (high variance), a blurred one is smoothed out (low variance)."""
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _pick_best_source(video_path: Path, candidates: list[dict]) -> Optional[dict]:
+    """Refines the front of a stable_id's ranked candidate list (see
+    _ranked_candidates_per_player) by motion blur: within the best conflict
+    tier present (non-conflicting appearances if there are any, otherwise
+    conflicting ones), and among candidates close in size to the largest one
+    there (so a small-but-sharp box can't beat a properly-sized one), picks
+    whichever actually decodes the sharpest. Falls back to the top-ranked
+    candidate outright if there's only one worth comparing, since decoding
+    a frame means a real video seek - not worth paying for when there's
+    nothing to compare against."""
+    if not candidates:
+        return None
+
+    best_conflict = candidates[0]["conflict"]
+    tier = [c for c in candidates if c["conflict"] == best_conflict][:BLUR_CANDIDATE_COUNT]
+    if len(tier) == 1:
+        return tier[0]
+
+    max_area = max(c["area"] for c in tier)
+    shortlist = [c for c in tier if c["area"] >= 0.5 * max_area]
+
+    best_record, best_score = shortlist[0], -1.0
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        for record in shortlist:
+            crop, _offset = _read_frame_crop(cap, record["frame_idx"], record["box"])
+            if crop is None:
+                continue
+            score = _sharpness_score(crop)
+            if score > best_score:
+                best_record, best_score = record, score
+    finally:
+        cap.release()
+
+    return best_record
+
+
+def _read_frame_crop(cap: cv2.VideoCapture, frame_idx: int, box: list[float]):
+    """The padded, raw BGR crop around box at frame_idx from an already-open
+    capture, plus its top-left corner in the original frame's own pixel
+    coordinates (so a caller can translate the same box into crop-local
+    coordinates - see _spotlight_primary) - or (None, None) if the frame/box
+    is unusable. Split out from _extract_crop so _pick_best_source can seek
+    the same open capture across several candidate frames for one player
+    instead of paying to open/close the video file per candidate."""
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    success, frame = cap.read()
+    if not success:
+        return None, None
+
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = box
+    pad_x = (x2 - x1) * THUMBNAIL_PADDING_FRACTION
+    pad_y = (y2 - y1) * THUMBNAIL_PADDING_FRACTION
+    x1, y1 = max(0, int(x1 - pad_x)), max(0, int(y1 - pad_y))
+    x2, y2 = min(w, int(x2 + pad_x)), min(h, int(y2 + pad_y))
+    if x2 <= x1 or y2 <= y1:
+        return None, None
+
+    return frame[y1:y2, x1:x2], (x1, y1)
 
 
 def _extract_crop(video_path: Path, frame_idx: int, box: list[float]):
     """The padded, raw BGR crop around box at frame_idx, plus its top-left
-    corner in the original frame's own pixel coordinates (so a caller can
-    translate some other detection's box into crop-local coordinates - see
-    _outline_other_people) - or (None, None) if the frame/box is unusable.
-    Shared by _extract_thumbnail (which additionally resizes, outlines any
-    other person caught in the same frame, and JPEG-encodes it for the UI)
-    and embed_player/auto_identify_from_gallery (which want the raw pixels
-    for the appearance encoder, not a re-decoded/annotated JPEG)."""
+    corner in the original frame's own pixel coordinates - or (None, None)
+    if the frame/box is unusable. Opens its own capture for a single read;
+    see _read_frame_crop for the version shared across several reads.
+    Shared by _extract_thumbnail/_extract_identification_thumbnail (which
+    additionally resize, optionally spotlight the primary subject, and
+    JPEG-encode for the UI) and embed_player/auto_identify_from_gallery
+    (which want the raw pixels for the appearance encoder, not a re-decoded/
+    annotated JPEG)."""
     cap = cv2.VideoCapture(str(video_path))
     try:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        success, frame = cap.read()
-        if not success:
-            return None, None
-
-        h, w = frame.shape[:2]
-        x1, y1, x2, y2 = box
-        pad_x = (x2 - x1) * THUMBNAIL_PADDING_FRACTION
-        pad_y = (y2 - y1) * THUMBNAIL_PADDING_FRACTION
-        x1, y1 = max(0, int(x1 - pad_x)), max(0, int(y1 - pad_y))
-        x2, y2 = min(w, int(x2 + pad_x)), min(h, int(y2 + pad_y))
-        if x2 <= x1 or y2 <= y1:
-            return None, None
-
-        return frame[y1:y2, x1:x2], (x1, y1)
+        return _read_frame_crop(cap, frame_idx, box)
     finally:
         cap.release()
 
 
-# Colours (BGR) for outlining a second detected person inside a thumbnail
-# crop - a dark rectangle drawn first, then a white one on top at the same
-# coordinates, so the visible edge reads as a white rectangle with a darker
-# outline that stays visible against any background (a light court floor, a
-# dark jersey, etc.) rather than blending into whichever it's drawn over.
-OTHER_PERSON_OUTLINE_COLOR = (20, 20, 20)
-OTHER_PERSON_FILL_COLOR = (255, 255, 255)
-OTHER_PERSON_OUTLINE_THICKNESS = 4
-OTHER_PERSON_INNER_THICKNESS = 2
+# Colours (BGR) for the primary subject's highlight box - a dark rectangle
+# drawn first, then a white one on top at the same coordinates, so the
+# visible edge reads as a white rectangle with a darker outline that stays
+# visible against any background (a light court floor, a dark jersey, etc.)
+# rather than blending into whichever it's drawn over.
+PRIMARY_OUTLINE_COLOR = (20, 20, 20)
+PRIMARY_FILL_COLOR = (255, 255, 255)
+PRIMARY_OUTLINE_THICKNESS = 4
+PRIMARY_INNER_THICKNESS = 2
 
-# Below this many pixels of a second person's box actually landing inside
-# the crop (post-resize), outlining them isn't worth it - a sliver of
-# someone at the very edge of the padded crop is more visual noise than a
-# useful "someone else is here too" signal.
-OTHER_PERSON_MIN_VISIBLE_PX = 4
+# How much to dim everything outside the primary subject's box - low enough
+# that a second person (or the net, the floor) caught in the same frame is
+# still visible as context, but unambiguously de-emphasized against the
+# full-brightness spotlighted subject, so a human naming this thumbnail
+# never mistakes someone else in frame for the person actually being shown.
+SPOTLIGHT_DARKEN_FACTOR = 0.25
 
 
-def _outline_other_people(
-    crop, frame_players: list[dict], primary_stable_id: int, offset: tuple[int, int], scale: float,
-) -> None:
-    """Draws a white/dark-outlined rectangle (see OTHER_PERSON_* above)
-    around every OTHER detected person whose box overlaps this thumbnail
-    crop, so a human naming/reviewing primary_stable_id can tell at a glance
-    that a second person caught in the same frame isn't the one being
-    identified. Mutates `crop` in place."""
-    ox, oy = offset
+def _spotlight_primary(crop, box_local: tuple[float, float, float, float]) -> None:
+    """Dims everything in `crop` outside box_local (the primary subject's
+    own detection box, already translated+scaled into this crop's own
+    post-resize pixel coordinates - see _extract_identification_thumbnail)
+    and draws a white/dark-outlined rectangle around it (see PRIMARY_*
+    above). Only ever called when another player's box actually conflicts
+    with this crop (see _has_conflict) - when the subject is alone in
+    frame there's nobody to disambiguate from, so the plain crop
+    (_extract_thumbnail) is used with no highlight at all. Replaces the
+    previous approach of outlining every OTHER detected person
+    individually, which could draw several overlapping boxes for what a
+    tracking hiccup had (incorrectly) split one real second person into -
+    a single spotlight on the actual subject sidesteps that regardless of
+    how many other detections land in the same frame. Coordinates are
+    clamped to the crop's own bounds first, so the drawn box is always
+    fully contained in the thumbnail even if the person's detection box
+    was resting right at the original video frame's edge (where
+    _extract_crop's own padding had nowhere further to expand into).
+    Mutates `crop` in place."""
     crop_h, crop_w = crop.shape[:2]
+    x1, y1, x2, y2 = box_local
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(crop_w, int(x2)), min(crop_h, int(y2))
 
-    for player in frame_players:
-        if player["stable_id"] == primary_stable_id:
-            continue
+    darkened = (crop.astype(np.float32) * SPOTLIGHT_DARKEN_FACTOR).astype(np.uint8)
+    if x2 > x1 and y2 > y1:
+        darkened[y1:y2, x1:x2] = crop[y1:y2, x1:x2]
+    crop[:] = darkened
 
-        x1, y1, x2, y2 = player["box"]
-        lx1, ly1 = (x1 - ox) * scale, (y1 - oy) * scale
-        lx2, ly2 = (x2 - ox) * scale, (y2 - oy) * scale
-
-        cx1, cy1 = max(0.0, lx1), max(0.0, ly1)
-        cx2, cy2 = min(float(crop_w), lx2), min(float(crop_h), ly2)
-        if cx2 - cx1 < OTHER_PERSON_MIN_VISIBLE_PX or cy2 - cy1 < OTHER_PERSON_MIN_VISIBLE_PX:
-            continue
-
-        p1, p2 = (int(cx1), int(cy1)), (int(cx2), int(cy2))
-        cv2.rectangle(crop, p1, p2, OTHER_PERSON_OUTLINE_COLOR, OTHER_PERSON_OUTLINE_THICKNESS)
-        cv2.rectangle(crop, p1, p2, OTHER_PERSON_FILL_COLOR, OTHER_PERSON_INNER_THICKNESS)
+    if x2 > x1 and y2 > y1:
+        cv2.rectangle(crop, (x1, y1), (x2, y2), PRIMARY_OUTLINE_COLOR, PRIMARY_OUTLINE_THICKNESS)
+        cv2.rectangle(crop, (x1, y1), (x2, y2), PRIMARY_FILL_COLOR, PRIMARY_INNER_THICKNESS)
 
 
-def _extract_thumbnail(
-    video_path: Path, frame_idx: int, box: list[float], stable_id: int, frame_players: list[dict],
-) -> Optional[str]:
+def _decode_resized_crop(
+    video_path: Path, frame_idx: int, box: list[float]
+) -> tuple[Optional[np.ndarray], Optional[tuple[float, float, float, float]]]:
+    """The resized thumbnail crop for box at frame_idx, plus box's own
+    coordinates translated into that crop's post-resize pixel space (for
+    _spotlight_primary) - or (None, None) if unusable. Shared by
+    _extract_thumbnail and _extract_identification_thumbnail so the two
+    only differ in whether they call _spotlight_primary on the result."""
     crop, offset = _extract_crop(video_path, frame_idx, box)
     if crop is None:
-        return None
+        return None, None
     # frame[y1:y2, x1:x2] is a view into the decoded frame, not its own
     # array - draw on a copy rather than risk mutating/relying on that.
     crop = crop.copy()
@@ -217,13 +331,40 @@ def _extract_thumbnail(
     else:
         scale = 1.0
 
-    _outline_other_people(crop, frame_players, stable_id, offset, scale)
+    ox, oy = offset
+    x1, y1, x2, y2 = box
+    box_local = ((x1 - ox) * scale, (y1 - oy) * scale, (x2 - ox) * scale, (y2 - oy) * scale)
+    return crop, box_local
 
+
+def _encode_jpeg(crop: np.ndarray) -> Optional[str]:
     ok, buffer = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     if not ok:
         return None
-
     return base64.b64encode(buffer).decode("ascii")
+
+
+def _extract_thumbnail(video_path: Path, frame_idx: int, box: list[float]) -> Optional[str]:
+    """The plain thumbnail - no highlight box, no dimming - used everywhere
+    a player's photo shows up (Players/Teams/Stats pages, and the resolved
+    Identified/Ignored groups on the identification page itself)."""
+    crop, _box_local = _decode_resized_crop(video_path, frame_idx, box)
+    if crop is None:
+        return None
+    return _encode_jpeg(crop)
+
+
+def _extract_identification_thumbnail(video_path: Path, frame_idx: int, box: list[float]) -> Optional[str]:
+    """The spotlighted, white-boxed variant (see _spotlight_primary) - only
+    ever generated when the chosen frame has a conflicting second box (see
+    _has_conflict), and only ever shown on the player-identification page's
+    still-Unidentified tiles, where it's actually needed to tell a human
+    which of two people in frame is the one being named."""
+    crop, box_local = _decode_resized_crop(video_path, frame_idx, box)
+    if crop is None:
+        return None
+    _spotlight_primary(crop, box_local)
+    return _encode_jpeg(crop)
 
 
 def load_names(output_path: Path) -> dict[str, str]:
@@ -270,12 +411,20 @@ _COURT_LENGTH_M = 18.0
 _COURT_WIDTH_M = 9.0
 
 # How far outside the marked court lines a player's foot position can still
-# land and count as "on the court" for recalibrate_players - generous, since
-# a real dig/dive routinely lands a step or two past the sideline or
-# baseline. A stable_id whose foot position NEVER falls within this margin
-# across the whole video is almost certainly not a player at all (bench,
-# staff, a spectator), not a player who just played close to the edge.
-PLAYER_COURT_MARGIN_M = 3.0
+# land and count as "on the court" for recalibrate_players. The two
+# directions get different allowances rather than one shared margin: behind
+# the baselines (the _COURT_LENGTH_M ends - x, below) is where a server
+# takes their approach and a deep defender/libero ranges chasing an
+# overpass, routinely several metres back, so that margin stays generous.
+# Beside the sidelines (the _COURT_WIDTH_M ends - y, below) there's no
+# equivalent in-play reason to be far from the lines - what's out there is
+# the bench, staff, and spectators, not a player mid-rally - so that margin
+# stays tight, just enough for a real wide dig's follow-through. A
+# stable_id whose foot position NEVER falls within these margins across the
+# whole video is almost certainly not a player at all, not a player who
+# just played close to the edge.
+PLAYER_BASELINE_MARGIN_M = 5.0
+PLAYER_SIDELINE_MARGIN_M = 1.5
 
 
 def _load_homography(output_path: Path):
@@ -346,11 +495,15 @@ def recalibrate_players(output_path: Path) -> int:
             # foot is much closer to the calibrated ground plane, so it
             # doesn't systematically read as "off court" the way an
             # elevated box-centre would for someone just standing normally
-            # in-bounds (see CourtDefinition.BallDetection.ballDetection.
-            # pixel_to_court's own docstring on this same elevation bias).
+            # in-bounds (see BallDetection.ballDetection.pixel_to_court's
+            # own docstring on this same elevation bias).
+            # fx runs along the baselines (0..COURT_LENGTH, net at the
+            # midpoint), fy along the sidelines (0..COURT_WIDTH) - see
+            # court.py's own corner layout - so the generous/tight margins
+            # above apply to the axis they're actually named for.
             fx, fy = _pixel_to_court((x1 + x2) / 2.0, y2, matrix)
-            if -PLAYER_COURT_MARGIN_M <= fx <= _COURT_LENGTH_M + PLAYER_COURT_MARGIN_M and \
-                    -PLAYER_COURT_MARGIN_M <= fy <= _COURT_WIDTH_M + PLAYER_COURT_MARGIN_M:
+            if -PLAYER_BASELINE_MARGIN_M <= fx <= _COURT_LENGTH_M + PLAYER_BASELINE_MARGIN_M and \
+                    -PLAYER_SIDELINE_MARGIN_M <= fy <= _COURT_WIDTH_M + PLAYER_SIDELINE_MARGIN_M:
                 ever_in_range.add(stable_id)
 
     positions_file.write_text(json.dumps(positions, indent=2))
@@ -404,13 +557,9 @@ def _save_thumbnail_cache(output_path: Path, cache: dict):
 
 def list_players(video_path: Path, output_path: Path, with_thumbnails: bool = True) -> list[dict]:
     positions = _load_player_positions(output_path)
-    best = _best_crop_per_player(positions, _frame_size(video_path))
+    ranked = _ranked_candidates_per_player(positions, _frame_size(video_path))
     names = load_names(output_path)
     ignored = load_ignored(output_path)
-    # Every player detected in a given frame, for _outline_other_people -
-    # lets a thumbnail mark up any second person who happened to be caught
-    # in the same frame as the one actually being shown.
-    players_by_frame = {entry["frame_idx"]: entry["players"] for entry in positions}
 
     # Extracting a thumbnail means opening the video and seeking to a
     # specific frame - the single slowest part of this endpoint, and one
@@ -418,31 +567,49 @@ def list_players(video_path: Path, output_path: Path, with_thumbnails: bool = Tr
     # PlayerReview, and the Stats page - which does this for every
     # completed job at once) since the chosen frame/box for a given
     # stable_id never changes once tracking has finished. Cache it to disk
-    # instead of re-seeking the video every time.
+    # instead of re-seeking the video every time. Validity is keyed off the
+    # top of the (cheap, pure-Python) candidate ranking rather than the
+    # actually-chosen frame_idx, since the latter can depend on a blur
+    # comparison we'd rather not redo on every request just to find out the
+    # cache is still good - the ranking itself only changes if
+    # player_positions.json does (re-tracking), which a version bump above
+    # already guards against for logic-only changes.
     cache = _load_thumbnail_cache(output_path) if with_thumbnails else {}
     cache_dirty = False
 
     players = []
-    for stable_id in sorted(best):
-        record = best[stable_id]
+    for stable_id in sorted(ranked):
+        candidates = ranked[stable_id]
+        top_candidate = candidates[0]
         thumbnail = None
+        identification_thumbnail = None
+        chosen = top_candidate
+
         if with_thumbnails:
             cache_key = str(stable_id)
             cached = cache.get(cache_key)
             if (
                 cached is not None
-                and cached.get("frame_idx") == record["frame_idx"]
                 and cached.get("v") == THUMBNAIL_CACHE_VERSION
+                and cached.get("top_frame_idx") == top_candidate["frame_idx"]
             ):
                 thumbnail = cached["thumbnail_base64"]
-            else:
-                frame_players = players_by_frame.get(record["frame_idx"], [])
-                thumbnail = _extract_thumbnail(
-                    video_path, record["frame_idx"], record["box"], stable_id, frame_players
+                identification_thumbnail = cached.get("identification_thumbnail_base64")
+                chosen = next(
+                    (c for c in candidates if c["frame_idx"] == cached.get("chosen_frame_idx")), top_candidate
                 )
+            else:
+                chosen = _pick_best_source(video_path, candidates) or top_candidate
+                thumbnail = _extract_thumbnail(video_path, chosen["frame_idx"], chosen["box"])
+                if chosen["conflict"]:
+                    identification_thumbnail = _extract_identification_thumbnail(
+                        video_path, chosen["frame_idx"], chosen["box"]
+                    )
                 cache[cache_key] = {
                     "thumbnail_base64": thumbnail,
-                    "frame_idx": record["frame_idx"],
+                    "identification_thumbnail_base64": identification_thumbnail,
+                    "top_frame_idx": top_candidate["frame_idx"],
+                    "chosen_frame_idx": chosen["frame_idx"],
                     "v": THUMBNAIL_CACHE_VERSION,
                 }
                 cache_dirty = True
@@ -450,10 +617,11 @@ def list_players(video_path: Path, output_path: Path, with_thumbnails: bool = Tr
         players.append({
             "stable_id": stable_id,
             "name": names.get(str(stable_id)),
-            "appearances": record["appearances"],
+            "appearances": chosen["appearances"],
             "thumbnail_base64": thumbnail,
-            "thumbnail_frame_idx": record["frame_idx"],
-            "thumbnail_timestamp_s": record["timestamp_s"],
+            "identification_thumbnail_base64": identification_thumbnail,
+            "thumbnail_frame_idx": chosen["frame_idx"],
+            "thumbnail_timestamp_s": chosen["timestamp_s"],
             "ignored": stable_id in ignored,
         })
 

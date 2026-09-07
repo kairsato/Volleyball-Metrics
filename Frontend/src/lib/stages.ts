@@ -38,6 +38,19 @@ export function formatDuration(seconds: number): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
+// Date AND time, not just the date - unlike VideoGrid's upload-date display,
+// same-day reruns are common enough here (someone reprocessing right after
+// checking results) that the date alone couldn't tell two runs apart.
+export function formatProcessedAt(isoDate: string): string {
+  return new Date(isoDate).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 // Ticks once a second so a currently-running stage can show a live elapsed
 // time instead of just a spinner. `since` is the job's updated_at - stage
 // transitions touch that field right as the new stage starts (and nothing

@@ -14,6 +14,7 @@ from .jobs import (
     STATUS_ERROR,
     STATUS_FINALIZING,
     STATUS_PROCESSING,
+    now_iso,
     store,
 )
 from .players import merge_names_into_stats
@@ -65,7 +66,11 @@ def _worker_loop():
                 _queued_job_ids.remove(job_id)
         try:
             work()
-            store.update(job_id, status=target_status_on_success, stage=None, error=None)
+            # processed_at marks THIS success specifically - see Job's own
+            # doc comment for why that's not the same thing updated_at
+            # already tracks (every write to this job, not just a pipeline
+            # run finishing).
+            store.update(job_id, status=target_status_on_success, stage=None, error=None, processed_at=now_iso())
         except JobCancelled:
             store.update(job_id, status=STATUS_CANCELLED, stage=None, error=None)
         except Exception as exc:  # noqa: BLE001 - surfaced on the job, not swallowed
@@ -165,6 +170,11 @@ def _phase_one(job_id: str, video_path: Path, output_path: Path):
     _run_stage(job_id, "action_detection", video_path, output_path)
 
 
+# Mirrors PHASE_TWO_STAGES in the frontend's lib/stages.ts, which the
+# "finalizing" status StageProgress renders.
+_PHASE_TWO_STAGES = ("consolidating", "dashboard", "rendering", "transcoding")
+
+
 def _phase_two(job_id: str, video_path: Path, output_path: Path):
     _run_stage(job_id, "consolidating", video_path, output_path)
     merge_names_into_stats(output_path)
@@ -198,15 +208,38 @@ def start_phase_one(job_id: str):
 
 
 def start_phase_two(job_id: str):
+    """
+    Runs phase two on its own - either the first time, right after an
+    errored phase-two attempt (see JobWorkspace.handleRetry, where phase one
+    is already complete but the job as a whole errored out), or as a
+    deliberate re-finalization of an already-"complete" job (see
+    PlayerIdentificationPage.handleRedoPlayers, re-run after clearing player
+    names) to refresh stats/dashboard/video from freshly-changed inputs.
+    That last case is why completed_stages/stage_durations_s get trimmed
+    below even though a fresh job's are already empty (a harmless no-op
+    there): re-finalizing an already-complete job would otherwise leave
+    every phase-two stage still marked done from the PREVIOUS run, so
+    StageProgress (see lib/stages.ts) reads 100%-already-complete and never
+    shows this run's own live progress until it finishes.
+    """
     video_path = config.find_input_video(job_id)
     if video_path is None:
         store.update(job_id, status=STATUS_ERROR, error="No uploaded video found for this job.")
         return
 
     output_path = config.output_dir(job_id)
-    store.update(job_id, status=STATUS_FINALIZING, error=None)
+    job = store.get(job_id)
+    completed_stages = [s for s in job.completed_stages if s not in _PHASE_TWO_STAGES]
+    stage_durations_s = {k: v for k, v in job.stage_durations_s.items() if k not in _PHASE_TWO_STAGES}
+    store.update(job_id, status=STATUS_FINALIZING, error=None,
+                 completed_stages=completed_stages, stage_durations_s=stage_durations_s)
 
     _enqueue(job_id, STATUS_COMPLETE, lambda: _phase_two(job_id, video_path, output_path))
+
+
+# The stages start_recalibration is about to re-run - "recalibrate" itself
+# plus _phase_two's own four (see _PHASE_TWO_STAGES above).
+_RECALIBRATION_STAGES = ("recalibrate",) + _PHASE_TWO_STAGES
 
 
 def start_recalibration(job_id: str):
@@ -227,7 +260,18 @@ def start_recalibration(job_id: str):
         return
 
     output_path = config.output_dir(job_id)
-    store.update(job_id, status=STATUS_FINALIZING, error=None)
+    job = store.get(job_id)
+
+    # A prior run (the original processing, or an earlier recalibration)
+    # already left these stages marked complete with their old durations -
+    # the frontend's StageProgress (see lib/stages.ts) treats "already in
+    # completed_stages" as "done, don't show it as active," so without this
+    # it reads the stale 100%-complete state from before and never shows
+    # this run's own live progress at all until the whole thing finishes.
+    completed_stages = [s for s in job.completed_stages if s not in _RECALIBRATION_STAGES]
+    stage_durations_s = {k: v for k, v in job.stage_durations_s.items() if k not in _RECALIBRATION_STAGES}
+    store.update(job_id, status=STATUS_FINALIZING, error=None,
+                 completed_stages=completed_stages, stage_durations_s=stage_durations_s)
 
     def work():
         _run_stage(job_id, "recalibrate", video_path, output_path)

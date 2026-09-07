@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from .. import config, players, roster
 from ..jobs import store
@@ -19,10 +20,7 @@ def _require_job(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
 
-@router.get("", response_model=PlayersListOut)
-async def get_players(job_id: str):
-    _require_job(job_id)
-
+def _get_players_sync(job_id: str) -> PlayersListOut:
     video_path = config.find_input_video(job_id)
     output_path = config.output_dir(job_id)
 
@@ -40,6 +38,17 @@ async def get_players(job_id: str):
         candidate_matches=[CandidateMatchOut(**m) for m in candidate_matches],
         confirmed=players.load_player_confirmed(output_path),
     )
+
+
+@router.get("", response_model=PlayersListOut)
+async def get_players(job_id: str):
+    _require_job(job_id)
+    # list_players does synchronous disk I/O and, on an uncached thumbnail,
+    # a video seek + OpenCV encode - run it off the event loop thread so N
+    # concurrent calls (Players/Teams pages fetch every completed job's
+    # players at once) can actually overlap instead of queueing behind each
+    # other one at a time, blocking the whole server meanwhile.
+    return await run_in_threadpool(_get_players_sync, job_id)
 
 
 @router.put("/names", response_model=NamesUpdateOut)

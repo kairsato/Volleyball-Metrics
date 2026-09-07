@@ -1,0 +1,39 @@
+# Reverse proxy in front of the frontend (Vite, :5173) and backend (FastAPI,
+# :8000) dev servers - collapses both into one HTTPS port (443) instead of
+# two raw ports, and fixes the CORS gap between them since the browser now
+# only ever sees one origin. /api/* goes to the backend, everything else to
+# the frontend.
+#
+# Ports 80+443 are what the Share feature forwards to this machine (see
+# Backend/API/share.py's SHARE_PORTS) - so this is reachable from the
+# internet whenever Share is on, not just the LAN. Re-run Share's "Automatically
+# open ports" toggle (or Backend/API/share.py's enable_upnp()) any time these
+# ports change - an existing router mapping doesn't update itself just
+# because this file or SHARE_PORTS did.
+#
+# DEV_HOSTNAME is your own dynamic-DNS hostname pointed at this machine's
+# public IP (kept up to date by whatever updater your DNS provider offers,
+# e.g. DuckDNS's) - set it from the app itself, in Settings > Share >
+# "Custom domain" (example placeholder: example.duckdns.org). _run_proxy.bat
+# reads that back out of Backend/API/data/hostname.txt into this env var
+# automatically before starting Caddy, so nobody's personal domain needs to
+# be hardcoded in this file or set by hand. A real hostname here gets a
+# real, automatically-renewing Let's Encrypt certificate for free - no `tls`
+# line needed, unlike the old bare-`:443`/`tls internal` setup this
+# replaced, so no browser warnings for anyone, not just this machine. www.
+# is included too - drop it if it doesn't resolve to the same IP for you.
+#
+# Running this file directly (not via _run_proxy.bat) needs DEV_HOSTNAME set
+# yourself first, e.g. (PowerShell) $env:DEV_HOSTNAME = "example.duckdns.org"
+#
+# Run: caddy run --config Caddyfile
+
+{$DEV_HOSTNAME}, www.{$DEV_HOSTNAME} {
+	handle /api/* {
+		reverse_proxy localhost:8000
+	}
+
+	handle {
+		reverse_proxy localhost:5173
+	}
+}

@@ -12,9 +12,18 @@ import torch
 import torch.nn.functional as F
 import cv2
 import numpy as np
-from torchvision.models import resnet18, ResNet18_Weights
 
 MODEL_PATH = "yolo26x.pt"
+
+# Ultralytics' own pretrained person-ReID encoder (auto-downloaded from their
+# release assets on first use) - see AppearanceEncoder for why this replaced
+# a generic ImageNet classifier. "m" (medium) balances embedding quality
+# against per-frame cost - benchmarked at ~54ms for a full 12-player frame
+# batch on CPU (this pipeline's fallback - see AppearanceEncoder), which is
+# comfortably inside an offline batch job's budget; "n"/"s" are faster but
+# measurably less discriminating between similarly-dressed players, which is
+# exactly the failure mode this swap exists to fix.
+REID_MODEL_NAME = "yolo26m-reid.onnx"
 
 # name -> tracker config passed to model.track
 TRACKERS = {
@@ -54,14 +63,6 @@ APPEARANCE_WEIGHT = 0.85
 # diving and upright players look different enough that mixing them hurts matching.
 ASPECT_EDGES = (0.45, 0.70, 1.00)
 CROSS_SHAPE_PENALTY = 0.2   # cost added when only another shape is stored
-
-# Appearance embeddings: ResNet18 input preprocessing (ImageNet normalisation).
-# 128x256 keeps roughly a player's real body proportions instead of squashing
-# them into a square, which otherwise distorts the embedding every frame.
-CNN_INPUT_WIDTH = 128
-CNN_INPUT_HEIGHT = 256
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 # How many recent embeddings each identity keeps per body-shape bucket.
 # Matching against the nearest of several real snapshots discriminates
@@ -307,42 +308,58 @@ def extract_crop(frame, box, exclude_boxes=None):
 
 class AppearanceEncoder:
     """
-    Batched CNN feature extractor used to tell visually similar players apart.
+    Batched appearance feature extractor used to tell visually similar players
+    apart.
 
-    Plain color histograms can't distinguish teammates wearing identical kits,
-    which is the biggest source of identity swaps in this pipeline. An
-    ImageNet-pretrained ResNet18 (used purely as a fixed feature extractor, not
-    fine-tuned) captures texture, build and pose in addition to color, so it is
-    far more discriminating between two players in the same uniform.
+    Wraps Ultralytics' own pretrained person-ReID encoder
+    (ultralytics.trackers.utils.reid.ReID, the same encoder BoT-SORT/Deep
+    OC-SORT/TrackTrack use internally - see custom_deepocsort.yaml's own note
+    on why that internal path is disabled here in favour of this one). This
+    replaced an ImageNet-pretrained ResNet18 used purely as a fixed feature
+    extractor: that model was trained to recognise object CATEGORIES, never to
+    tell two individual people apart, so plain classifier features regularly
+    failed to distinguish teammates wearing identical kits - the biggest
+    source of identity swaps in this pipeline. REID_MODEL_NAME's encoder is
+    instead trained via metric learning specifically for "is this the same
+    person", which is a much closer match to what this pipeline actually
+    needs.
+
+    Falls back to CPU automatically (Ultralytics' own AutoBackend prints a
+    warning and retries) if no working CUDA execution provider is found for
+    onnxruntime - a real path in practice, not just a theoretical one: at the
+    time this was written, onnxruntime-gpu's own bundled cuDNN build failed to
+    initialise against this project's RTX 5090 (a runtime cuDNN-frontend
+    error, unrelated to anything in this codebase). CPU inference for a whole
+    frame's worth of player crops still comfortably fits this pipeline's
+    offline-batch budget (see REID_MODEL_NAME's own benchmark note) - nowhere
+    near the tighter budget a live/real-time tracker would need.
     """
 
     def __init__(self, device):
+        from ultralytics.trackers.utils.reid import ReID
+
         self.device = device
+        # ReID wants an int GPU index (or "cpu"), not a torch.device - this
+        # pipeline's own device values are either a torch.device("cuda:0")/
+        # ("cpu") (tracker_offline.py) or the bare string "cpu" (players.py,
+        # player_gallery.py), so normalise both to what it expects.
+        if isinstance(device, torch.device):
+            reid_device = device.index if device.type == "cuda" else "cpu"
+        else:
+            reid_device = 0 if str(device).startswith("cuda") else "cpu"
 
-        try:
-            model = resnet18(weights=ResNet18_Weights.DEFAULT)
-        except Exception as e:
-            print(f"Could not download pretrained ResNet18 weights ({e}); "
-                  f"falling back to randomly initialised weights.")
-            model = resnet18(weights=None)
-
-        model.fc = torch.nn.Identity()
-        model.eval()
-
-        self.model = model.to(device)
+        self._reid = ReID(REID_MODEL_NAME, device=reid_device)
 
     def _prepare(self, crop):
-        # A distant player's crop is usually far smaller than the CNN input, so
-        # this is normally an upsample - INTER_CUBIC preserves more of what
-        # little detail is there than INTER_LINEAR's flatter blur.
-        interpolation = (cv2.INTER_CUBIC if crop.shape[0] < CNN_INPUT_HEIGHT
-                         or crop.shape[1] < CNN_INPUT_WIDTH else cv2.INTER_AREA)
-
-        resized = cv2.resize(crop, (CNN_INPUT_WIDTH, CNN_INPUT_HEIGHT), interpolation=interpolation)
+        size = self._reid.imgsz
+        # A distant player's crop is usually far smaller than the model's
+        # input, so this is normally an upsample - INTER_CUBIC preserves more
+        # of what little detail is there than INTER_LINEAR's flatter blur.
+        interpolation = cv2.INTER_CUBIC if crop.shape[0] < size or crop.shape[1] < size else cv2.INTER_AREA
+        resized = cv2.resize(crop, (size, size), interpolation=interpolation)
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        normed = (rgb - IMAGENET_MEAN) / IMAGENET_STD
 
-        return np.transpose(normed, (2, 0, 1))
+        return np.transpose(rgb, (2, 0, 1))
 
     @torch.no_grad()
     def encode(self, crops):
@@ -358,9 +375,26 @@ class AppearanceEncoder:
             return results
 
         batch = np.stack([self._prepare(crops[i]) for i in valid])
-        tensor = torch.from_numpy(batch).to(self.device)
+        tensor = torch.from_numpy(batch).to(self._reid.device)
 
-        features = self.model(tensor)
+        # Most of these ReID exports use a dynamic batch dimension (no fixed
+        # size to respect), but a handful of static ONNX exports don't - see
+        # ultralytics.trackers.utils.reid.ReID.__call__, whose chunk-and-pad
+        # handling for that case is mirrored here.
+        bs, n = self._reid.batch_size, tensor.shape[0]
+        if bs is None or n == bs:
+            features = self._reid.model(tensor)
+        else:
+            outs = []
+            for s in range(0, n, bs):
+                chunk = tensor[s:s + bs]
+                if chunk.shape[0] < bs:
+                    chunk = torch.cat([chunk, chunk[-1:].expand(bs - chunk.shape[0], *chunk.shape[1:])], 0)
+                outs.append(self._reid.model(chunk))
+            features = torch.cat(outs, 0)[:n]
+
+        if not isinstance(features, torch.Tensor):
+            features = torch.from_numpy(np.asarray(features))
         features = F.normalize(features, dim=1)
         features = features.cpu().numpy()
 

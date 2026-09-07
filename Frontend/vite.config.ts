@@ -10,5 +10,16 @@ export default defineConfig({
     // machine's own IP (e.g. http://192.168.1.27:5173) - not just from
     // this machine itself.
     host: true,
+    // Vite rejects requests whose Host header it doesn't recognize (DNS
+    // rebinding protection) - fine for a LAN IP, but the Caddy reverse
+    // proxy in front of this (see ../Caddyfile) forwards the ORIGINAL Host
+    // header through unchanged, so a request arriving via a public domain
+    // (whatever hostname was set in the app's Share settings) still says
+    // e.g. "Host: example.duckdns.org" by the time it reaches here. `true`
+    // disables the check entirely rather than listing a specific hostname -
+    // safe here since this dev server is never exposed directly, only
+    // through Caddy (see ../Caddyfile), which already only answers for the
+    // one hostname it's configured with.
+    allowedHosts: true,
   },
 })

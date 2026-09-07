@@ -62,13 +62,23 @@ NET_PROXIMITY_M = 2.5
 # building an attack from a soft one (a set).
 FAST_INCOMING_SPEED_MS = 8.0
 
-# NOTE ON ACCURACY: action TYPE (spike/set/dig/block/serve) is a rough
-# geometric heuristic, not a trained classifier - there's no labelled
-# action-recognition dataset or model for this project yet (see the ball
-# detection fine-tuning for what that would take). Hit TIMING and rough
-# court position are much more trustworthy than the type label; expect
-# real misclassification, especially for sets/digs which look similar
-# from trajectory alone. "hit" is used whenever no rule confidently applies.
+# NOTE ON ACCURACY: hit TIMING and rough court position come from ball
+# trajectory alone and are trustworthy. Action TYPE is decided two ways:
+# "serve" is always the geometric/timing rule below (a rally's first touch
+# needs no classifier - see SERVE_WINDOW_SECONDS). Every other touch is
+# classified by a trained image classifier (see training/, and
+# MachineLearning/datasetGather.py's ActionDatasets for what it was
+# trained on) run on the
+# attributed player's crop at the hit frame, when a model checkpoint is
+# present at ACTION_CLASSIFIER_PATH and confident enough
+# (ACTION_CLASSIFIER_CONFIDENCE_THRESHOLD); the old rough geometric
+# heuristic (_classify below) is the fallback for whatever the classifier
+# can't confidently call, or for a checkout with no trained model at all.
+# "hit" is used whenever nothing above confidently applies.
+
+ACTION_CLASSIFIER_PATH = Path(__file__).parent / "action_classifier.pt"
+ACTION_CLASSIFIER_CONFIDENCE_THRESHOLD = 0.6
+ACTION_CLASSIFIER_IMAGE_SIZE = 224
 
 
 def _velocity(entry_a, entry_b, fps):
@@ -126,11 +136,18 @@ def _neighbor_after(real, i):
 def _find_hits(ball_entries, fps):
     """
     Real (non-interpolated) ball detections only - an interpolated point is
-    the Kalman filter's own smoothed guess, not a measurement, and using it
-    here would mean detecting "hits" partly manufactured by the filter's own
-    smoothing rather than anything that happened in the footage.
+    a smoothed guess, not a measurement, and using it here would mean
+    detecting "hits" partly manufactured by the smoothing rather than
+    anything that happened in the footage. A frame the ball tracker
+    couldn't place at all (pixel is None - see
+    BallDetection.ballDetection.build_speed_log) isn't "interpolated"
+    either, but it's just as much not a measurement, so it's excluded the
+    same way - without this, two consecutive not-visible frames both
+    resolve to a None pixel and their difference collapses to a 0-d array
+    instead of a 2-element vector, which _angle_between then can't reduce
+    to a scalar.
     """
-    real = [e for e in ball_entries if not e["interpolated"]]
+    real = [e for e in ball_entries if not e["interpolated"] and e["pixel"] is not None]
     hits = []
 
     for i in range(len(real)):
@@ -273,6 +290,79 @@ def _classify(hit, prev_hit, rally, serve_window_frames):
     return "hit"
 
 
+_action_classifier_cache = {}
+
+
+def _load_action_classifier():
+    """Lazily loads the trained spike/set/dig/block crop classifier (see
+    training/train.py) if a checkpoint exists at ACTION_CLASSIFIER_PATH -
+    returns None otherwise (including if torch/torchvision aren't
+    installed), so detectActions() keeps working heuristic-only exactly as
+    before on a checkout that hasn't trained one yet. Cached at module
+    level since detectActions() may run once per job but this should only
+    ever load the model weights once per process."""
+    if "model" in _action_classifier_cache:
+        return _action_classifier_cache["model"]
+
+    loaded = None
+    if ACTION_CLASSIFIER_PATH.exists():
+        try:
+            import torch
+            from torchvision import transforms
+
+            from .training.model import build_model
+
+            checkpoint = torch.load(ACTION_CLASSIFIER_PATH, map_location="cpu")
+            classes = checkpoint["classes"]
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            model = build_model(
+                num_classes=len(classes),
+                architecture=checkpoint.get("architecture", "resnet50"),
+                pretrained=False,
+            )
+            model.load_state_dict(checkpoint["state_dict"])
+            model.to(device).eval()
+
+            transform = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize((ACTION_CLASSIFIER_IMAGE_SIZE, ACTION_CLASSIFIER_IMAGE_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+
+            loaded = {"model": model, "classes": classes, "device": device, "transform": transform}
+        except Exception as exc:
+            print(f"Could not load action classifier at {ACTION_CLASSIFIER_PATH} ({exc}); "
+                  f"falling back to the geometric heuristic for every hit.")
+
+    _action_classifier_cache["model"] = loaded
+    return loaded
+
+
+def _crop_box(frame, box):
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return frame[y1:y2, x1:x2]
+
+
+def _classify_with_model(classifier, crop):
+    """Runs the trained classifier on one BGR player crop, returning
+    (predicted_app_action_type, confidence)."""
+    import torch
+
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    tensor = classifier["transform"](rgb).unsqueeze(0).to(classifier["device"])
+    with torch.no_grad():
+        probs = torch.softmax(classifier["model"](tensor), dim=1)[0]
+    confidence, index = torch.max(probs, dim=0)
+    return classifier["classes"][index.item()], float(confidence.item())
+
+
 def detectActions(video_path, output_path):
 
     ball_file = Path(output_path) / BALL_SPEED_LOG_NAME
@@ -314,43 +404,78 @@ def detectActions(video_path, output_path):
 
     hits = _find_hits(ball_entries, fps)
 
+    classifier = _load_action_classifier()
+    crop_cap = cv2.VideoCapture(str(video_path)) if classifier is not None else None
+
     actions = []
     prev_hit_in_rally = {}
 
-    for hit in hits:
+    try:
+        for hit in hits:
 
-        rally = _rally_for_frame(rallies, hit["frame_idx"])
-        rally_index = rally["rally_index"] if rally is not None else None
+            rally = _rally_for_frame(rallies, hit["frame_idx"])
+            rally_index = rally["rally_index"] if rally is not None else None
+            prev_hit = prev_hit_in_rally.get(rally_index)
 
-        prev_hit = prev_hit_in_rally.get(rally_index)
-        action_type = _classify(hit, prev_hit, rally, serve_window_frames)
-        prev_hit_in_rally[rally_index] = hit
+            frame_players = _players_near_frame(players_by_frame, hit["frame_idx"]) or []
+            player_id = _nearest_player(frame_players, hit["pixel"], hit["court"], diagonal)
 
-        frame_players = _players_near_frame(players_by_frame, hit["frame_idx"]) or []
-        player_id = _nearest_player(frame_players, hit["pixel"], hit["court"], diagonal)
+            # Serve is always the timing rule, never the classifier - see
+            # the NOTE ON ACCURACY above. Everything else prefers the
+            # trained classifier's call on the attributed player's crop at
+            # the hit frame, falling back to the geometric heuristic when
+            # there's no player attribution, no classifier loaded, or the
+            # classifier itself isn't confident enough.
+            is_serve = rally is not None and hit["frame_idx"] - rally["start_frame"] <= serve_window_frames
+            action_type = "serve" if is_serve else None
+            action_type_confidence = None
 
-        # A hit's in/out speed is only exposed in real units (m/s) when both
-        # sides of it were - never a mix of one real reading and one pixel
-        # reading masquerading as the same unit. See _find_hits above.
-        real_units = hit["speed_in_real_units"] and hit["speed_out_real_units"]
-        time_since_prev_touch_s = (
-            (hit["frame_idx"] - prev_hit["frame_idx"]) / fps if prev_hit is not None else None
-        )
+            if action_type is None and classifier is not None and player_id is not None:
+                player_box = next((p["box"] for p in frame_players if p["stable_id"] == player_id), None)
+                if player_box is not None:
+                    crop_cap.set(cv2.CAP_PROP_POS_FRAMES, hit["frame_idx"])
+                    success, frame = crop_cap.read()
+                    crop = _crop_box(frame, player_box) if success else None
+                    if crop is not None:
+                        predicted, confidence = _classify_with_model(classifier, crop)
+                        if confidence >= ACTION_CLASSIFIER_CONFIDENCE_THRESHOLD:
+                            action_type, action_type_confidence = predicted, confidence
 
-        actions.append({
-            "frame_idx": hit["frame_idx"],
-            "timestamp_s": hit["frame_idx"] / fps,
-            "rally_index": rally_index,
-            "player_stable_id": player_id,
-            "action_type": action_type,
-            "ball_pixel": hit["pixel"],
-            "ball_court": hit["court"],
-            "ball_height_m": hit["height_m"],
-            "speed_in_m_per_s": hit["speed_in_ms_or_pxs"] if real_units else None,
-            "speed_out_m_per_s": hit["speed_out_ms_or_pxs"] if real_units else None,
-            "real_units": real_units,
-            "time_since_prev_touch_s": time_since_prev_touch_s,
-        })
+            if action_type is None:
+                action_type = _classify(hit, prev_hit, rally, serve_window_frames)
+
+            prev_hit_in_rally[rally_index] = hit
+
+            # A hit's in/out speed is only exposed in real units (m/s) when both
+            # sides of it were - never a mix of one real reading and one pixel
+            # reading masquerading as the same unit. See _find_hits above.
+            real_units = hit["speed_in_real_units"] and hit["speed_out_real_units"]
+            time_since_prev_touch_s = (
+                (hit["frame_idx"] - prev_hit["frame_idx"]) / fps if prev_hit is not None else None
+            )
+
+            actions.append({
+                "frame_idx": hit["frame_idx"],
+                "timestamp_s": hit["frame_idx"] / fps,
+                "rally_index": rally_index,
+                "player_stable_id": player_id,
+                "action_type": action_type,
+                # "classifier" or "heuristic" - which of the two paths in
+                # the NOTE ON ACCURACY above actually produced action_type
+                # for this hit; None for "classifier" means confidence
+                # wasn't measured (i.e. the heuristic path, or "serve").
+                "action_type_confidence": action_type_confidence,
+                "ball_pixel": hit["pixel"],
+                "ball_court": hit["court"],
+                "ball_height_m": hit["height_m"],
+                "speed_in_m_per_s": hit["speed_in_ms_or_pxs"] if real_units else None,
+                "speed_out_m_per_s": hit["speed_out_ms_or_pxs"] if real_units else None,
+                "real_units": real_units,
+                "time_since_prev_touch_s": time_since_prev_touch_s,
+            })
+    finally:
+        if crop_cap is not None:
+            crop_cap.release()
 
     actions_file = Path(output_path) / ACTIONS_LOG_NAME
 

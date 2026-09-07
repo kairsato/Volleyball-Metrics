@@ -9,10 +9,15 @@ STATS_LOG_NAME = "player_stats.json"
 ACTION_TYPES = ["serve", "spike", "set", "dig", "block", "hit"]
 
 CAVEATS = [
-    "action_type comes from a rough geometric heuristic (ball trajectory shape "
-    "and net proximity), not a trained action classifier - expect real "
-    "misclassification, especially between set and dig, which look similar "
-    "from trajectory alone.",
+    "action_type is \"serve\" from a timing rule, and otherwise a trained "
+    "image classifier's call on the attributed player's crop at the hit "
+    "frame when one is loaded and confident enough - see "
+    "ActionDetection.actionDetection's NOTE ON ACCURACY. It falls back to a "
+    "rough geometric heuristic (ball trajectory shape and net proximity) "
+    "when there's no player attribution, no trained classifier available, "
+    "or the classifier isn't confident - expect more misclassification on "
+    "heuristic-fallback hits, especially between set and dig, which look "
+    "similar from trajectory alone.",
 
     "rally_ending_touches counts how often a player's touch was the LAST one "
     "before their rally ended. This is NOT a true miss/error rate: it counts "

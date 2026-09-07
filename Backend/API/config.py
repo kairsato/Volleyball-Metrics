@@ -70,3 +70,53 @@ def output_dir(job_id: str) -> Path:
 def find_input_video(job_id: str) -> Path | None:
     matches = sorted(job_dir(job_id).glob("input.*"))
     return matches[0] if matches else None
+
+
+# Multi-video jobs: segment 0 (the first uploaded file) always lives at the
+# flat paths above (input<ext>, output/) - the exact same paths a plain
+# single-video job has always used. Only segments 1+ get this new
+# videos/<segment_id>/ subtree, so an existing single-video job on disk, or
+# a new one, never has to know multi-video jobs exist at all. See
+# resolve_video_and_output below, the one seam every segment-aware call
+# site should go through instead of reasoning about the order==0 case
+# itself.
+def video_dir(job_id: str, segment_id: str) -> Path:
+    return job_dir(job_id) / "videos" / segment_id
+
+
+def segment_video_path(job_id: str, segment_id: str, suffix: str = "") -> Path:
+    return video_dir(job_id, segment_id) / f"input{suffix}"
+
+
+def find_segment_video(job_id: str, segment_id: str) -> Path | None:
+    matches = sorted(video_dir(job_id, segment_id).glob("input.*"))
+    return matches[0] if matches else None
+
+
+def segment_output_dir(job_id: str, segment_id: str) -> Path:
+    return output_dir(job_id) / "segments" / segment_id
+
+
+def segment_destination(job_id: str, segment: dict) -> Path:
+    """Where to WRITE a segment's video file during upload - the
+    deterministic counterpart to resolve_video_and_output below, which
+    instead LOOKS UP an already-uploaded file by globbing (and returns None
+    if nothing's there yet - exactly wrong for "where should the upload
+    handler stream this to"). Needs segment["suffix"] (the extension,
+    including the dot) since, unlike a lookup, there's nothing on disk yet
+    to glob for."""
+    suffix = segment["suffix"] or ""
+    if segment["order"] == 0:
+        return input_video_path(job_id, suffix)
+    return segment_video_path(job_id, segment["id"], suffix)
+
+
+def resolve_video_and_output(job_id: str, segment: dict) -> tuple[Path | None, Path]:
+    """(video_path, output_path) for one segment dict (see jobs.job_videos)
+    - segment["order"] == 0 always resolves to the legacy flat paths,
+    regardless of how many segments the job has or what that segment's own
+    id is."""
+    if segment["order"] == 0:
+        return find_input_video(job_id), output_dir(job_id)
+    segment_id = segment["id"]
+    return find_segment_video(job_id, segment_id), segment_output_dir(job_id, segment_id)

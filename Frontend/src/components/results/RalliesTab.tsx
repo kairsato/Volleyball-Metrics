@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Accordion from "@mui/material/Accordion";
 import AccordionDetails from "@mui/material/AccordionDetails";
 import AccordionSummary from "@mui/material/AccordionSummary";
@@ -201,11 +201,40 @@ export function RalliesTab({ jobId, rallies, flatEvents, currentTime, onSeek, on
     };
   }, [jobId]);
 
+  // currentTime ticks up to 60x/second while playing (VideoPlayer drives it
+  // from requestAnimationFrame so PlayerTrackingOverlay's box-gliding reads
+  // smoothly - see its own doc comment), and this component re-renders on
+  // every one of those ticks purely to refresh which rally's card is
+  // highlighted. Regrouping every rally by game, and - previously -
+  // re-filtering the entire flatEvents array and re-resolving each rally's
+  // winner from scratch, on every single one of those ticks is what made
+  // this tab feel slow: none of that actually depends on currentTime, so
+  // it's memoized here instead of recomputed per frame.
+  const groups = useMemo(() => groupByGame(rallies, score?.result?.games ?? []), [rallies, score]);
+
+  const eventsByRally = useMemo(() => {
+    const map = new Map<number, FlatEvent[]>();
+    for (const e of flatEvents) {
+      if (e.rally_index === null) continue;
+      const list = map.get(e.rally_index);
+      if (list) list.push(e);
+      else map.set(e.rally_index, [e]);
+    }
+    return map;
+  }, [flatEvents]);
+
+  const winnerByRally = useMemo(() => {
+    const map = new Map<number, RallyWinnerBadge | null>();
+    for (const rally of rallies) {
+      map.set(rally.rally_index, resolveWinner(rally.rally_index, score, matchup, teams));
+    }
+    return map;
+  }, [rallies, score, matchup, teams]);
+
   if (rallies.length === 0) {
     return <Typography color="text.secondary">No rallies were detected in this video.</Typography>;
   }
 
-  const groups = groupByGame(rallies, score?.result?.games ?? []);
   const showGameHeaders = groups.length > 1 || groups[0]?.game !== null;
 
   if (!showGameHeaders) {
@@ -215,9 +244,9 @@ export function RalliesTab({ jobId, rallies, flatEvents, currentTime, onSeek, on
           <RallyCard
             key={rally.rally_index}
             rally={rally}
-            events={flatEvents.filter((e) => e.rally_index === rally.rally_index)}
+            events={eventsByRally.get(rally.rally_index) ?? []}
             isCurrent={currentTime >= rally.start_time_s && currentTime <= rally.end_time_s}
-            winner={resolveWinner(rally.rally_index, score, matchup, teams)}
+            winner={winnerByRally.get(rally.rally_index) ?? null}
             onSeek={onSeek}
             onPlayAll={onPlayAll}
           />
@@ -241,9 +270,9 @@ export function RalliesTab({ jobId, rallies, flatEvents, currentTime, onSeek, on
                 <RallyCard
                   key={rally.rally_index}
                   rally={rally}
-                  events={flatEvents.filter((e) => e.rally_index === rally.rally_index)}
+                  events={eventsByRally.get(rally.rally_index) ?? []}
                   isCurrent={currentTime >= rally.start_time_s && currentTime <= rally.end_time_s}
-                  winner={resolveWinner(rally.rally_index, score, matchup, teams)}
+                  winner={winnerByRally.get(rally.rally_index) ?? null}
                   onSeek={onSeek}
                   onPlayAll={onPlayAll}
                 />

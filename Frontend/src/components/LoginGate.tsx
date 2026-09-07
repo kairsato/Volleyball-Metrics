@@ -4,12 +4,12 @@ import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
+import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { api } from "../lib/api";
 import type { Captcha } from "../lib/types";
-import { LoadingSpinner } from "./LoadingSpinner";
 
 interface LoginGateProps {
   children: ReactNode;
@@ -17,10 +17,14 @@ interface LoginGateProps {
 
 // Gates the whole app behind a login screen only when the backend actually
 // has login turned on (see Backend/API/auth.py - off by default, matching
-// how this app has always run with no auth at all). Also listens for
-// api.ts's "auth:unauthorized" event, dispatched whenever any API call gets
-// a 401, so an expired/revoked session drops back to this screen mid-use
-// instead of the app just silently failing every request after that.
+// how this app has always run with no auth at all) AND says THIS browser
+// specifically needs it (status.login_required, not status.enabled) - a
+// LAN visitor never needs to log in, even while Share has login on for
+// remote ones (see main.py's AuthMiddleware, which has the same LAN
+// bypass this mirrors). Also listens for api.ts's "auth:unauthorized"
+// event, dispatched whenever any API call gets a 401, so an expired/
+// revoked session drops back to this screen mid-use instead of the app
+// just silently failing every request after that.
 export function LoginGate({ children }: LoginGateProps) {
   const [checking, setChecking] = useState(true);
   const [needsLogin, setNeedsLogin] = useState(false);
@@ -33,7 +37,7 @@ export function LoginGate({ children }: LoginGateProps) {
   function checkStatus() {
     return api
       .authStatus()
-      .then((status) => setNeedsLogin(status.enabled))
+      .then((status) => setNeedsLogin(status.login_required))
       .catch(() => setNeedsLogin(false));
   }
 
@@ -93,7 +97,21 @@ export function LoginGate({ children }: LoginGateProps) {
     }
   }
 
-  if (checking) return <LoadingSpinner minHeight={400} />;
+  if (checking) {
+    return (
+      <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", p: 2 }}>
+        <Card variant="outlined" sx={{ p: 4, width: "100%", maxWidth: 380 }}>
+          <Skeleton variant="text" width="70%" height={40} sx={{ mb: 3 }} />
+          <Stack spacing={2}>
+            <Skeleton variant="rounded" height={56} />
+            <Skeleton variant="rounded" height={120} sx={{ alignSelf: "center", width: "80%" }} />
+            <Skeleton variant="rounded" height={56} />
+            <Skeleton variant="rounded" height={36} />
+          </Stack>
+        </Card>
+      </Box>
+    );
+  }
   if (!needsLogin) return <>{children}</>;
 
   return (

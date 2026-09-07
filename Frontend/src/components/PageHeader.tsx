@@ -22,7 +22,10 @@ interface PageHeaderProps {
 export function PageHeader({ title, addLabel, onAdd, children }: PageHeaderProps) {
   return (
     <Box sx={{ mb: 3 }}>
-      <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: children ? 2 : 0 }}>
+      <Stack
+        direction="row"
+        sx={{ alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", rowGap: 1, mb: children ? 2 : 0 }}
+      >
         <Typography variant="h4" sx={{ fontWeight: 700 }}>
           {title}
         </Typography>

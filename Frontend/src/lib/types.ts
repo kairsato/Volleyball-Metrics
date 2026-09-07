@@ -7,6 +7,18 @@ export type JobStatus =
   | "error"
   | "cancelled";
 
+// One uploaded video within a job's `videos` list - see Job.videos below.
+export interface VideoSegment {
+  id: string;
+  order: number;
+  original_filename: string;
+  duration_s: number | null;
+  // User-provided at upload time, defaulting to the video's own recording-
+  // date metadata when readable, else the upload date - see
+  // Backend/API/video_metadata.py.
+  date_played: string | null;
+}
+
 export interface Job {
   id: string;
   original_filename: string;
@@ -16,16 +28,42 @@ export interface Job {
   stage: string | null;
   completed_stages: string[];
   stage_durations_s: Record<string, number>;
+  // When the pipeline last actually finished running - deliberately NOT
+  // the same thing as updated_at, which bumps on essentially any change to
+  // the job (a calibration save, a player rename), not just a completed
+  // run. Null for a job that's never completed one, or one processed
+  // before this field existed.
+  processed_at: string | null;
   error: string | null;
   // The uploaded video's own length in seconds - null until the backend has
   // computed it (see Backend/API/routers/jobs_router.py's _ensure_duration).
+  // For a multi-video job this mirrors segment 0's own duration_s - see
+  // `videos` below for every segment.
   duration_s: number | null;
+  // Segment 0's own date_played, mirrored here for convenience - same
+  // reasoning as duration_s above.
+  date_played: string | null;
+  // Every video segment making up this job, in order - length 1 for an
+  // ordinary single-video job.
+  videos: VideoSegment[];
+  // Only meaningful when videos.length > 1 - see CalibrationPanel.tsx's
+  // "segmented court selections" toggle.
+  segmented_calibration: boolean;
   // Video-list summary flags - always false/null for a job that isn't
   // "complete" yet, since neither player identification nor scoring exists
   // before then.
   needs_player_id: boolean;
   needs_scoring_review: boolean;
   winner_team_name: string | null;
+  // Whether a warmup period is confirmed for this video - when true,
+  // warmup_start_s/warmup_end_s are the resolved absolute-video-time
+  // bounds the player, thumbnails, and every rally/stat below already
+  // restrict themselves to server-side (see Backend/API/warmup.py). Both
+  // null when no warmup period is confirmed, meaning the whole video is in
+  // play as before this feature existed.
+  warmup_confirmed: boolean;
+  warmup_start_s: number | null;
+  warmup_end_s: number | null;
   // 1-based position in the pipeline queue while still waiting for a
   // worker to pick this job up - null once it's actually running, done,
   // or was never queued at all.
@@ -37,6 +75,11 @@ export interface Player {
   name: string | null;
   appearances: number;
   thumbnail_base64: string | null;
+  // Only set when the thumbnail frame has another player's box crowding
+  // into the crop - a copy of thumbnail_base64 with a white highlight box
+  // around the actual subject. Only ever used on the player-identification
+  // page's still-unnamed tiles; everywhere else shows thumbnail_base64.
+  identification_thumbnail_base64: string | null;
   thumbnail_frame_idx: number | null;
   thumbnail_timestamp_s: number | null;
   ignored: boolean;
@@ -67,6 +110,11 @@ export interface PlayerEvent {
   frame_idx: number;
   timestamp_s: number;
   action_type: string;
+  // Confidence (0-1) of the trained action classifier's call on this hit -
+  // null when action_type instead came from the "serve" timing rule or the
+  // geometric-heuristic fallback (see ActionDetection.actionDetection's
+  // NOTE ON ACCURACY / consolidate.py's CAVEATS).
+  action_type_confidence: number | null;
   rally_index: number | null;
   // Ball speed immediately before/after this touch - m/s when real_units is
   // true, otherwise px/s (mirrors ball_speed.json's own real_units field).
@@ -141,6 +189,17 @@ export interface CalibrationPointsOut {
   predicted: PredictedCourtGeometry | null;
 }
 
+export interface WarmupConfig {
+  job_id: string;
+  start_s: number;
+  // null means "the end of the video" - duration_s below always resolves
+  // it to a concrete value for anything that needs one (e.g. a range
+  // slider's max).
+  end_s: number | null;
+  confirmed: boolean;
+  duration_s: number | null;
+}
+
 export interface Rally {
   rally_index: number;
   start_time_s: number;
@@ -155,6 +214,74 @@ export interface ResultsOut {
   caveats: string[];
   dashboard_available: boolean;
   video_available: boolean;
+}
+
+export interface BallTrajectoryPoint {
+  // Seconds, relative to the warmup period's start (same basis as every
+  // other timestamp the player deals in) - see warmup.py.
+  t: number;
+  // Real-world court coordinates in metres, same system as
+  // ActionQualityCategory instances' ball_court - can fall outside
+  // [0, court_length_m] x [0, court_width_m] (a serve from behind the
+  // baseline, tracking noise). Used for the corner Minimap annotation.
+  // Null when this job has no court calibration yet - the point still
+  // carries px/py in that case, just nothing Minimap can plot.
+  x: number | null;
+  y: number | null;
+  // Raw source-video pixel coordinates of the same detection, when
+  // available - used for the on-video Ball tracking annotation (see
+  // BallTrackingOverlay.tsx). Null for a point with no pixel reading.
+  px: number | null;
+  py: number | null;
+  // Estimated height (metres) above the court's ground plane - only
+  // populated when this job's calibration includes a solved camera pose.
+  // Used by BallTrajectoryOverlay to clip its arc once the ball descends
+  // back below net height.
+  height_m: number | null;
+}
+
+export interface BallTrajectory {
+  job_id: string;
+  points: BallTrajectoryPoint[];
+  court_length_m: number;
+  court_width_m: number;
+  net_height_m: number;
+  // The ORIGINAL uploaded video's own pixel resolution - what every px/py
+  // above is measured in. NOT the currently-playing quality rendition's
+  // resolution (see api.ts's sourceVideoUrl/VideoPlayer's quality prop):
+  // those can differ once a viewer picks a lower-bitrate quality, and an
+  // overlay sized from the <video> element's own decoded videoWidth/
+  // videoHeight instead of this would misplace every annotation the moment
+  // that happens. Null while ball_detection hasn't completed yet.
+  frame_w: number | null;
+  frame_h: number | null;
+}
+
+export interface PlayerBox {
+  stable_id: number;
+  // null for a still-unnamed detection - falls back to "#<stable_id>".
+  name: string | null;
+  // [x1, y1, x2, y2] in the source video's own pixel space.
+  box: [number, number, number, number];
+  // Real-world court metres under this player's feet, same coordinate
+  // system as BallTrajectoryPoint.x/y - used by BallMinimap to place them
+  // on the court diagram. Null for a job with no court calibration.
+  court_x: number | null;
+  court_y: number | null;
+}
+
+export interface PlayerTrajectoryFrame {
+  // Same relative-to-warmup-start basis as BallTrajectoryPoint.t.
+  t: number;
+  players: PlayerBox[];
+}
+
+export interface PlayerTrajectory {
+  job_id: string;
+  frames: PlayerTrajectoryFrame[];
+  // Same meaning as BallTrajectory.frame_w/frame_h - see there.
+  frame_w: number | null;
+  frame_h: number | null;
 }
 
 export interface TeamPlayer {
@@ -217,6 +344,30 @@ export interface OcrRegion {
   height: number;
 }
 
+export interface OcrDetection {
+  text: string;
+  // 0-1, easyocr's own confidence for this one detection - not tied to
+  // whether it ended up being picked as the left/right digit at all (see
+  // ScoreRegionTestResult), just how sure the model was it read `text`
+  // correctly.
+  confidence: number;
+}
+
+// One-off "Test frame" read of a single exact frame/region - see
+// Backend/API/score_cv.py's test_region and the Setup tab's Scoreboard
+// Identification Region dialog, which calls this before a region is even
+// saved so a human can sanity-check it against a real frame first.
+export interface ScoreRegionTestResult {
+  left: number | null;
+  left_confidence: number | null;
+  right: number | null;
+  right_confidence: number | null;
+  // Every raw detection in the crop, not just the two picked out as
+  // left/right - shows what the model actually saw (a misread digit, a
+  // stray label, nothing at all) even when left/right come back null.
+  detections: OcrDetection[];
+}
+
 export interface ScoreConfig {
   method: ScoreMethod;
   team_x_id: string | null;
@@ -225,6 +376,12 @@ export interface ScoreConfig {
   // Only meaningful for method "ocr" - flips which geometric side the
   // left-read digit is treated as belonging to.
   cv_reverse_direction: boolean;
+  // Minimum OCR confidence (0-1) a digit-run detection needs before it
+  // counts at all - a detection below this is treated the same as that
+  // side not having been read, rather than trusting a low-confidence
+  // guess. Also what the Scoreboard Identification Region dialog's own
+  // "Test frame" button uses, so a test read previews real behavior.
+  ocr_min_confidence: number;
   compute_status: "idle" | "computing" | "done" | "error";
   compute_error: string | null;
   // Whether the user has explicitly signed off on the scoring shown in
@@ -372,11 +529,23 @@ export interface PlayerRadarOut {
 }
 
 export interface AuthStatus {
+  // Whether login is turned on globally - drives the Share dialog's own UI
+  // (the switch, password form, etc.), NOT whether this specific browser
+  // needs to authenticate - see login_required below for that.
   enabled: boolean;
   password_set: boolean;
   // ISO timestamp of when login will auto-disable itself - null while
   // login is off, or for a pre-existing config saved before this existed.
   expires_at: string | null;
+  // Whether THIS browser specifically needs to log in - false for a LAN
+  // visitor even while `enabled` is true for remote ones. LoginGate reads
+  // this, not `enabled`, to decide whether to show the login screen.
+  login_required: boolean;
+  // Whether THIS browser is on the LAN - independent of whether login is
+  // even on (unlike login_required above). SettingsMenu reads this to hide
+  // the Share menu item entirely for a remote visitor, since every
+  // /api/share/* call it could make is already blocked server-side anyway.
+  is_lan: boolean;
 }
 
 export interface Captcha {
@@ -399,6 +568,7 @@ export interface ShareStatus {
   upnp_enabled: boolean;
   external_ip: string | null;
   local_ip: string;
+  hostname: string | null;
   ports: PortStatus[];
   share_url: string;
   last_error: string | null;

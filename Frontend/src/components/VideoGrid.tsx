@@ -79,14 +79,32 @@ const HOVER_PREVIEW_DURATION_S = 5;
 // reuses the same full-video stream the Results page already plays from.
 function VideoThumbnail({ job }: { job: Job }) {
   const [hovering, setHovering] = useState(false);
+  // Whether the preview <video> is actually rendering a frame yet. Until
+  // then it's blank (renders as solid black/grey), so the crossfade from
+  // the static thumbnail waits on this instead of just `hovering` -
+  // otherwise there's a flash of empty video between the thumbnail fading
+  // out and the first real frame showing up. This deliberately waits for
+  // the "playing" event rather than "seeked" - seeked can fire once the
+  // browser has located the target frame but before it's actually been
+  // painted, which still let the grey flash through.
+  const [previewReady, setPreviewReady] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canPreview = job.duration_s != null;
-  const previewStart = job.duration_s != null ? job.duration_s / 2 : 0;
+  // Once a warmup period is confirmed, the preview should come from
+  // somewhere inside it (its own midpoint) rather than the raw file's -
+  // otherwise the hover preview could show pre-game warmup footage the
+  // rest of the app treats as excluded.
+  const previewStart = job.warmup_confirmed
+    ? ((job.warmup_start_s ?? 0) + (job.warmup_end_s ?? job.duration_s ?? 0)) / 2
+    : job.duration_s != null
+      ? job.duration_s / 2
+      : 0;
 
   useEffect(() => {
     const el = videoRef.current;
     if (!hovering || !el) return;
 
+    setPreviewReady(false);
     el.currentTime = previewStart;
     void el.play();
 
@@ -96,9 +114,19 @@ function VideoThumbnail({ job }: { job: Job }) {
       }
     }
 
+    function handlePlaying() {
+      setPreviewReady(true);
+    }
+
     el.addEventListener("timeupdate", handleTimeUpdate);
-    return () => el.removeEventListener("timeupdate", handleTimeUpdate);
+    el.addEventListener("playing", handlePlaying);
+    return () => {
+      el.removeEventListener("timeupdate", handleTimeUpdate);
+      el.removeEventListener("playing", handlePlaying);
+    };
   }, [hovering, previewStart]);
+
+  const showPreview = hovering && previewReady && canPreview;
 
   return (
     <Box
@@ -113,7 +141,7 @@ function VideoThumbnail({ job }: { job: Job }) {
           backgroundImage: `url(${api.thumbnailUrl(job.id)})`,
           backgroundSize: "cover",
           backgroundPosition: "center",
-          opacity: hovering && canPreview ? 0 : 1,
+          opacity: showPreview ? 0 : 1,
           transition: "opacity 0.15s ease",
         }}
       />
@@ -132,7 +160,7 @@ function VideoThumbnail({ job }: { job: Job }) {
             width: "100%",
             height: "100%",
             objectFit: "cover",
-            opacity: hovering ? 1 : 0,
+            opacity: showPreview ? 1 : 0,
             pointerEvents: "none",
             transition: "opacity 0.15s ease",
           }}

@@ -282,6 +282,7 @@ function OcrRegionDialog({
   minTimeS,
   maxTimeS,
   initialRegion,
+  initialMinConfidence,
   reverseDirection,
   onReverseDirectionChange,
   onConfirm,
@@ -292,21 +293,27 @@ function OcrRegionDialog({
   minTimeS: number;
   maxTimeS: number;
   initialRegion: OcrRegion | null;
+  initialMinConfidence: number;
   reverseDirection: boolean;
   onReverseDirectionChange: (value: boolean) => void;
-  onConfirm: (region: OcrRegion) => void;
+  onConfirm: (region: OcrRegion, minConfidence: number) => void;
 }) {
   const [draftRegion, setDraftRegion] = useState<OcrRegion | null>(initialRegion);
+  const [draftMinConfidence, setDraftMinConfidence] = useState(initialMinConfidence);
 
   useEffect(() => {
-    if (open) setDraftRegion(initialRegion);
+    if (open) {
+      setDraftRegion(initialRegion);
+      setDraftMinConfidence(initialMinConfidence);
+    }
     // Only reset the draft when the dialog is (re)opened, not every time
-    // initialRegion's identity happens to change while it's already open.
+    // initialRegion/initialMinConfidence's identity happens to change while
+    // it's already open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+    <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth>
       <DialogTitle>Scoreboard Identification Region</DialogTitle>
       <DialogContent>
         <ScoreRegionPicker
@@ -315,6 +322,8 @@ function OcrRegionDialog({
           maxTimeS={maxTimeS}
           region={draftRegion}
           onRegionChange={setDraftRegion}
+          minConfidence={draftMinConfidence}
+          onMinConfidenceChange={setDraftMinConfidence}
         />
 
         <FormControlLabel
@@ -335,7 +344,11 @@ function OcrRegionDialog({
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="contained" disabled={!draftRegion} onClick={() => draftRegion && onConfirm(draftRegion)}>
+        <Button
+          variant="contained"
+          disabled={!draftRegion}
+          onClick={() => draftRegion && onConfirm(draftRegion, draftMinConfidence)}
+        >
           OK
         </Button>
       </DialogActions>
@@ -511,6 +524,7 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
         merged.team_y_id,
         merged.ocr_region,
         merged.cv_reverse_direction,
+        merged.ocr_min_confidence,
       );
       setScoreConfig(saved);
     } catch (err) {
@@ -854,10 +868,11 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
         minTimeS={ocrRange.minTimeS}
         maxTimeS={ocrRange.maxTimeS}
         initialRegion={scoreConfig.ocr_region}
+        initialMinConfidence={scoreConfig.ocr_min_confidence}
         reverseDirection={scoreConfig.cv_reverse_direction}
         onReverseDirectionChange={(value) => void saveConfig({ cv_reverse_direction: value })}
-        onConfirm={(region) => {
-          void saveConfig({ ocr_region: region });
+        onConfirm={(region, minConfidence) => {
+          void saveConfig({ ocr_region: region, ocr_min_confidence: minConfidence });
           setOcrDialogOpen(false);
         }}
       />

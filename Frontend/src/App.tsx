@@ -9,10 +9,14 @@ import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
+import Drawer from "@mui/material/Drawer";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import IconButton from "@mui/material/IconButton";
 import Link from "@mui/material/Link";
+import List from "@mui/material/List";
+import ListItemButton from "@mui/material/ListItemButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
+import ListItemText from "@mui/material/ListItemText";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
@@ -29,6 +33,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import LogoutIcon from "@mui/icons-material/Logout";
+import MenuIcon from "@mui/icons-material/Menu";
 import SettingsIcon from "@mui/icons-material/Settings";
 import ShareIcon from "@mui/icons-material/Share";
 import ShuffleIcon from "@mui/icons-material/Shuffle";
@@ -56,6 +61,7 @@ import { TeamsPage } from "./pages/TeamsPage";
 import { TeamStatsPage } from "./pages/TeamStatsPage";
 import { VideoPage } from "./pages/VideoPage";
 import { VideosPage } from "./pages/VideosPage";
+import { WarmupPeriodPage } from "./pages/WarmupPeriodPage";
 import { LoginGate } from "./components/LoginGate";
 import { UploadPanel } from "./components/UploadPanel";
 import { api } from "./lib/api";
@@ -93,9 +99,16 @@ function ShareSettingsDialog({ open, onClose }: { open: boolean; onClose: () => 
   const [share, setShare] = useState<ShareStatus | null>(null);
   const [upnpSaving, setUpnpSaving] = useState(false);
   const [urlRevealed, setUrlRevealed] = useState(false);
+  const [hostnameInput, setHostnameInput] = useState("");
+  const [hostnameSaving, setHostnameSaving] = useState(false);
   // Turning ports off is a real router change, not just a UI flip - confirm
   // before actually doing it rather than closing them on the first click.
   const [confirmUpnpOff, setConfirmUpnpOff] = useState(false);
+  // How long Share stays on before auto-disabling itself once switched on -
+  // null means "Forever" (never auto-expires). Only read at the moment the
+  // switch turns on (see handleToggleEnabled) - not persisted/restored, so
+  // this just resets to the default each time the dialog reopens.
+  const [durationDays, setDurationDays] = useState<number | null>(7);
 
   useEffect(() => {
     if (!open) return;
@@ -104,8 +117,15 @@ function ShareSettingsDialog({ open, onClose }: { open: boolean; onClose: () => 
     setError(null);
     setMessage(null);
     setUrlRevealed(false);
+    setDurationDays(7);
     api.authStatus().then(setStatus).catch(() => undefined);
-    api.shareStatus().then(setShare).catch(() => undefined);
+    api
+      .shareStatus()
+      .then((s) => {
+        setShare(s);
+        setHostnameInput(s.hostname ?? "");
+      })
+      .catch(() => undefined);
   }, [open]);
 
   async function handleSetPassword() {
@@ -141,7 +161,7 @@ function ShareSettingsDialog({ open, onClose }: { open: boolean; onClose: () => 
     setError(null);
     setMessage(null);
     try {
-      setStatus(await api.authSetEnabled(enabled));
+      setStatus(await api.authSetEnabled(enabled, durationDays));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -158,6 +178,22 @@ function ShareSettingsDialog({ open, onClose }: { open: boolean; onClose: () => 
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setUpnpSaving(false);
+    }
+  }
+
+  async function handleSetHostname() {
+    setHostnameSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await api.setHostname(hostnameInput.trim() || null);
+      setShare(res);
+      setHostnameInput(res.hostname ?? "");
+      setMessage(res.hostname ? "Hostname saved." : "Hostname cleared.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHostnameSaving(false);
     }
   }
 
@@ -191,9 +227,24 @@ function ShareSettingsDialog({ open, onClose }: { open: boolean; onClose: () => 
           <Stack spacing={3} sx={{ mt: 1 }}>
             <Alert severity="warning">
               Enabling Share makes this app reachable from the internet. Your password is the only thing standing
-              between a stranger and your videos - use a strong one (ideally generated). Share turns itself off
-              automatically after 7 days, or you can turn it off yourself anytime.
+              between a stranger and your videos - use a strong one (ideally generated). Share settings themselves
+              (this dialog, and changing the password) stay locked to your local network either way - only the rest
+              of the app is reachable remotely.
             </Alert>
+
+            <TextField
+              select
+              size="small"
+              label="Share stays on for"
+              value={durationDays === null ? "forever" : String(durationDays)}
+              onChange={(event) => setDurationDays(event.target.value === "forever" ? null : Number(event.target.value))}
+              disabled={saving}
+              sx={{ maxWidth: 220 }}
+            >
+              <MenuItem value="1">1 day</MenuItem>
+              <MenuItem value="7">7 days</MenuItem>
+              <MenuItem value="forever">Forever</MenuItem>
+            </TextField>
 
             <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
               <Stack spacing={2}>
@@ -250,10 +301,11 @@ function ShareSettingsDialog({ open, onClose }: { open: boolean; onClose: () => 
                     Set a password above before turning this on.
                   </Typography>
                 )}
-                {status?.enabled && status.expires_at && (
+                {status?.enabled && (
                   <Typography variant="caption" color="text.secondary">
-                    Expires {formatExpiryTimestamp(status.expires_at)} ({formatRemaining(status.expires_at)}{" "}
-                    remaining).
+                    {status.expires_at
+                      ? `Expires ${formatExpiryTimestamp(status.expires_at)} (${formatRemaining(status.expires_at)} remaining).`
+                      : "Set to never expire automatically - turn it off yourself when you're done."}
                   </Typography>
                 )}
               </Stack>
@@ -339,6 +391,35 @@ function ShareSettingsDialog({ open, onClose }: { open: boolean; onClose: () => 
 
             <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
               <Stack spacing={1}>
+                <Typography variant="subtitle2">Custom domain (optional)</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Point a domain at this machine - a free dynamic-DNS one (e.g. via DuckDNS) works fine if your IP
+                  isn't static - and set it here. The Share URL below uses it instead of a raw IP, and if you're
+                  running this behind the bundled Caddy reverse proxy (see ../Caddyfile), Caddy picks it up
+                  automatically next time it starts, so it can get a real, browser-trusted HTTPS certificate for it.
+                </Typography>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="example.duckdns.org"
+                    value={hostnameInput}
+                    onChange={(event) => setHostnameInput(event.target.value)}
+                    disabled={hostnameSaving}
+                  />
+                  <Button
+                    variant="outlined"
+                    disabled={hostnameSaving || hostnameInput.trim() === (share?.hostname ?? "")}
+                    onClick={() => void handleSetHostname()}
+                  >
+                    Save
+                  </Button>
+                </Stack>
+              </Stack>
+            </Paper>
+
+            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+              <Stack spacing={1}>
                 <Typography variant="subtitle2">Share URL</Typography>
                 <Stack direction="row" spacing={1} alignItems="center">
                   <TextField
@@ -401,6 +482,18 @@ function SettingsMenu() {
   const { mode, setMode } = useThemeMode();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  // Defaults to true (shown) while this is still loading - briefly showing
+  // the item is harmless (every /api/share/* call it could make is already
+  // blocked server-side for a remote visitor regardless, see
+  // main.py's LAN_ONLY_PATH_PREFIXES), a flash of hidden-then-shown isn't.
+  const [isLan, setIsLan] = useState(true);
+
+  useEffect(() => {
+    api
+      .authStatus()
+      .then((status) => setIsLan(status.is_lan))
+      .catch(() => undefined);
+  }, []);
 
   return (
     <>
@@ -428,17 +521,19 @@ function SettingsMenu() {
           <ListItemIcon>{mode === "light" ? <CheckIcon fontSize="small" /> : <LightModeIcon fontSize="small" />}</ListItemIcon>
           Light theme
         </MenuItem>
-        <MenuItem
-          onClick={() => {
-            setShareDialogOpen(true);
-            setAnchorEl(null);
-          }}
-        >
-          <ListItemIcon>
-            <ShareIcon fontSize="small" />
-          </ListItemIcon>
-          Share
-        </MenuItem>
+        {isLan && (
+          <MenuItem
+            onClick={() => {
+              setShareDialogOpen(true);
+              setAnchorEl(null);
+            }}
+          >
+            <ListItemIcon>
+              <ShareIcon fontSize="small" />
+            </ListItemIcon>
+            Share
+          </MenuItem>
+        )}
         <MenuItem
           onClick={() => {
             setAnchorEl(null);
@@ -484,27 +579,50 @@ function LegacySetupRedirect() {
 function TopNav() {
   const location = useLocation();
   const activeTo = NAV_ITEMS.find((item) => item.to === location.pathname)?.to ?? false;
+  const [navOpen, setNavOpen] = useState(false);
 
   return (
     <AppBar position="sticky" color="default" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
-      <Toolbar sx={{ gap: 2 }}>
+      <Toolbar sx={{ gap: { xs: 1, sm: 2 } }}>
+        <IconButton
+          aria-label="Open navigation menu"
+          onClick={() => setNavOpen(true)}
+          sx={{ display: { xs: "inline-flex", md: "none" } }}
+        >
+          <MenuIcon />
+        </IconButton>
+
         <Typography
           variant="h6"
           component={RouterLink}
           to="/home"
-          sx={{ fontWeight: 600, textDecoration: "none", color: "inherit", whiteSpace: "nowrap" }}
+          sx={{ fontWeight: 600, textDecoration: "none", color: "inherit", whiteSpace: "nowrap", flexShrink: 0 }}
         >
           🏐 Volleyball Metrics
         </Typography>
 
-        <Tabs value={activeTo} sx={{ flexGrow: 1, minHeight: 0 }}>
+        <Tabs value={activeTo} sx={{ flexGrow: 1, minHeight: 0, display: { xs: "none", md: "flex" } }}>
           {NAV_ITEMS.map((item) => (
             <Tab key={item.to} label={item.label} value={item.to} component={RouterLink} to={item.to} sx={{ minHeight: 0 }} />
           ))}
         </Tabs>
 
+        <Box sx={{ flexGrow: { xs: 1, md: 0 } }} />
+
         <SettingsMenu />
       </Toolbar>
+
+      <Drawer anchor="left" open={navOpen} onClose={() => setNavOpen(false)}>
+        <Box sx={{ width: 240 }} role="presentation" onClick={() => setNavOpen(false)}>
+          <List>
+            {NAV_ITEMS.map((item) => (
+              <ListItemButton key={item.to} component={RouterLink} to={item.to} selected={activeTo === item.to}>
+                <ListItemText primary={item.label} />
+              </ListItemButton>
+            ))}
+          </List>
+        </Box>
+      </Drawer>
     </AppBar>
   );
 }
@@ -561,7 +679,7 @@ function AppContent() {
     <Box sx={{ minHeight: "100vh" }}>
       <TopNav />
 
-      <Box sx={{ p: 5 }}>
+      <Box sx={{ px: "clamp(16px, 4vw, 40px)", py: 5 }}>
         {listError && (
           <Alert severity="error" sx={{ mb: 3 }}>
             {listError}
@@ -576,7 +694,6 @@ function AppContent() {
               <HomePage
                 jobs={jobs}
                 onSelectJob={selectJob}
-                onAddVideo={() => setUploadOpen(true)}
                 onViewVideos={() => navigate("/videos")}
               />
             }
@@ -608,6 +725,10 @@ function AppContent() {
             element={<PlayerIdentificationPage onJobUpdated={handleJobUpdated} />}
           />
           <Route path="/video/setup/scoring-determination" element={<ScoringDeterminationPage />} />
+          <Route
+            path="/video/setup/warmup-period"
+            element={<WarmupPeriodPage onJobUpdated={handleJobUpdated} />}
+          />
           {/* Old routes from before Playlist/Results were renamed to Videos, Stats to Players, and Credits to About - redirect rather than 404 in case anything still links here. */}
           <Route path="/playlist" element={<Navigate to="/videos" replace />} />
           <Route path="/results" element={<Navigate to={`/video${location.search}`} replace />} />

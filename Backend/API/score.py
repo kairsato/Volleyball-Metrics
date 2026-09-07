@@ -42,6 +42,13 @@ DEFAULT_CONFIG = {
     "team_y_id": None,
     "ocr_region": None,
     "cv_reverse_direction": False,
+    # Minimum easyocr confidence (0-1) a digit-run detection needs before
+    # score_cv counts it at all - a detection below this is treated the
+    # same as not having read that side, rather than trusting a low-
+    # confidence guess. Defaults to 0 (no filtering) so an existing video's
+    # behavior doesn't silently change on upgrade; user-adjustable from the
+    # Scoreboard Identification Region dialog.
+    "ocr_min_confidence": 0.0,
     "compute_status": "idle",
     "compute_error": None,
     # Set once the user has explicitly signed off on the scoring shown in

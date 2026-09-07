@@ -6,23 +6,25 @@ if str(ANALYSIS_DIR) not in sys.path:
     sys.path.insert(0, str(ANALYSIS_DIR))
 
 from CourtDefinition.court import courtDefine
-from CourtDefinition.BallDetection.ballDetection import detectBall
+from BallDetection.ballDetection import detectBall
 from PlayerDetection.tracker_offline import trackplayers_offline
 from GameStatusDetection.gameStatusDetection import detectGameStatus
 from ActionDetection.actionDetection import detectActions
 from PostProcessing.consolidate import consolidateStats
 from PostProcessing.renderVideo import renderAnnotatedVideo
 from PostProcessing.generate_dashboard import generateDashboard
+from label import labelVideo
 
 video_path = "C:\\Users\\Kai\\Documents\\VolleyballArea\\verycut.mp4"
 output_path = "C:\\Users\\Kai\\Documents\\Volleyball Footage\\generatedStuff"
 
-courtDefine(video_path,output_path)
-trackplayers_offline(video_path,output_path, True,False)
-#detectBall(video_path,output_path)
+#courtDefine(video_path,output_path)
+#trackplayers_offline(video_path,output_path, True,False)
+detectBall(video_path,output_path, show_preview=True)
 #detectGameStatus(video_path,output_path)
 #detectActions(video_path,output_path)
 #consolidateStats(output_path)
 #generateDashboard(output_path)
 #renderAnnotatedVideo(video_path,output_path)
+#labelVideo(video_path,output_path)
 

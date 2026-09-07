@@ -6,8 +6,8 @@ import Typography from "@mui/material/Typography";
 import { api } from "../lib/api";
 import { PHASE_ONE_STAGES, PHASE_TWO_STAGES, phaseOneComplete } from "../lib/stages";
 import type { Job } from "../lib/types";
-import { LoadingSpinner } from "./LoadingSpinner";
 import { ResultsView } from "./ResultsView";
+import { JobWorkspaceSkeleton } from "./Skeletons";
 import { StageProgress } from "./StageProgress";
 
 const POLL_INTERVAL_MS = 3000;
@@ -102,7 +102,7 @@ export function JobWorkspace({ jobId, onJobUpdated, onBackToDashboard }: JobWork
   }
 
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
-  if (!job) return <LoadingSpinner />;
+  if (!job) return <JobWorkspaceSkeleton />;
 
   return (
     <Box>

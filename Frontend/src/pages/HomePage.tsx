@@ -36,11 +36,10 @@ function StatTile({ value, label }: { value: number; label: string }) {
 interface HomePageProps {
   jobs: Job[];
   onSelectJob: (jobId: string) => void;
-  onAddVideo: () => void;
   onViewVideos: () => void;
 }
 
-export function HomePage({ jobs, onSelectJob, onAddVideo, onViewVideos }: HomePageProps) {
+export function HomePage({ jobs, onSelectJob, onViewVideos }: HomePageProps) {
   const [asyncStats, setAsyncStats] = useState<AsyncStats>({ totalHits: 0, totalPlayers: 0 });
 
   const completed = jobs.filter((j) => j.status === "complete").length;
@@ -82,14 +81,14 @@ export function HomePage({ jobs, onSelectJob, onAddVideo, onViewVideos }: HomePa
         <StatTile value={asyncStats.totalPlayers} label="Players tracked" />
       </Grid>
 
-      <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 2 }}>
+      <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", rowGap: 1, mb: 2 }}>
         <Typography variant="h5" sx={{ fontWeight: 600 }}>
           Recent videos
         </Typography>
         {jobs.length > 0 && <Button onClick={onViewVideos}>View all in Videos</Button>}
       </Stack>
 
-      <VideoGrid jobs={recent} onSelectJob={onSelectJob} onAddVideo={onAddVideo} />
+      <VideoGrid jobs={recent} onSelectJob={onSelectJob} />
     </Box>
   );
 }

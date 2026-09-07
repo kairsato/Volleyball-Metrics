@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import auth, config, score, share
+from . import auth, config, network, score, share
 
 # How often the background watcher re-checks whether Share's 7-day window
 # has expired - see _watch_share_expiry. Short enough that an unattended
@@ -22,12 +22,24 @@ from .routers import (
     score_router,
     share_router,
     team_roster_router,
+    warmup_router,
 )
 
 # Reachable with no session at all, even once login is turned on - status/
 # captcha/login are what a not-yet-authenticated client needs to actually
 # log in; health is just a liveness probe with nothing sensitive in it.
 AUTH_PUBLIC_PATHS = {"/api/health", "/api/auth/status", "/api/auth/captcha", "/api/auth/login"}
+
+# Blocked for anyone not on the LAN, regardless of session/auth state -
+# Share turning the rest of the app on for internet visitors was never
+# meant to also hand them the controls for Share itself (or the ability to
+# change the login password out from under the owner). See network.py.
+LAN_ONLY_PATH_PREFIXES = ("/api/share",)
+LAN_ONLY_PATHS = {"/api/auth/set-password", "/api/auth/enable", "/api/auth/generate-password"}
+
+
+def _is_lan_only_path(path: str) -> bool:
+    return path in LAN_ONLY_PATHS or any(path.startswith(prefix) for prefix in LAN_ONLY_PATH_PREFIXES)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -36,10 +48,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
     this exists at all. A no-op (every request passes straight through)
     whenever auth.status()'s "enabled" is False, which is the default -
     running this app on localhost/a LAN has never needed a login, and still
-    doesn't unless a password is actually set up and turned on."""
+    doesn't unless a password is actually set up and turned on.
+
+    Login only ever gates *remote* access - a LAN request never needs a
+    session, even while Share is on, matching how this app has always
+    worked (see auth.py's own module docstring). That's why
+    DynamicCORSMiddleware below never opens itself up for arbitrary
+    origins the way it used to: a hostile page loaded in a LAN user's own
+    browser could otherwise ride that LAN-trust bypass with no token
+    needed at all."""
 
     async def dispatch(self, request: Request, call_next):
-        if request.method == "OPTIONS" or request.url.path in AUTH_PUBLIC_PATHS:
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        if _is_lan_only_path(request.url.path) and not network.is_lan_request(request):
+            return JSONResponse({"detail": "This is only available on the local network."}, status_code=403)
+
+        if request.url.path in AUTH_PUBLIC_PATHS or network.is_lan_request(request):
             return await call_next(request)
 
         # Cheap on the normal path (one JSON read); only touches UPnP when
@@ -66,42 +92,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-class DynamicCORSMiddleware:
-    """Swaps between the LAN-only CORS policy (config.CORS_ORIGIN_REGEX) and
-    a fully-open one, based on whether login is currently enabled.
-
-    CORS on its own was never meant to be this API's security boundary -
-    login (auth.py) is. The LAN-only restriction exists only to keep the
-    *default*, no-login setup safe for its intended LAN-only use case; once
-    a password is actually required, a browser can't forge the
-    Authorization header a hostile cross-origin page would need anyway, so
-    there's nothing left for a stricter CORS policy to usefully protect -
-    and keeping it strict would just break the reachable-from-outside setup
-    (a port-forward, UPnP) that requiring login was built to make safe.
-    """
-
-    def __init__(self, app):
-        self._strict = CORSMiddleware(
-            app,
-            allow_origins=config.CORS_ORIGINS,
-            allow_origin_regex=config.CORS_ORIGIN_REGEX,
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-        self._open = CORSMiddleware(
-            app,
-            allow_origin_regex=r".*",
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
-    async def __call__(self, scope, receive, send):
-        target = self._open if auth.load_config()["enabled"] else self._strict
-        await target(scope, receive, send)
-
-
 app = FastAPI(title="Volleyball Video Analytics API")
 
 # Registered before the CORS middleware so CORS ends up OUTERMOST (Starlette
@@ -109,7 +99,23 @@ app = FastAPI(title="Volleyball Video Analytics API")
 # still needs the usual CORS headers attached, or the browser reports an
 # opaque CORS failure instead of a readable 401.
 app.add_middleware(AuthMiddleware)
-app.add_middleware(DynamicCORSMiddleware)
+# Lets a LAN browser reach the API cross-port (frontend on :5173, API on
+# :8000, see vite.config.ts) without needing a session, matching
+# AuthMiddleware's own LAN bypass above. Deliberately never opens up wider
+# than this, even once login is on: a legitimate remote visitor (via
+# Share) talks to the API through Caddy on the SAME origin as the frontend
+# (see ../../Caddyfile and api.ts's API_BASE), never cross-origin, so
+# there's nothing for a wider policy to enable that a real client needs -
+# and opening it would let a hostile page loaded in a LAN user's own
+# browser ride AuthMiddleware's LAN bypass with no token needed at all.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.CORS_ORIGINS,
+    allow_origin_regex=config.CORS_ORIGIN_REGEX,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(jobs_router.router)
 app.include_router(calibration_router.router)
@@ -119,6 +125,7 @@ app.include_router(results_router.router)
 app.include_router(roster_router.router)
 app.include_router(team_roster_router.router)
 app.include_router(score_router.router)
+app.include_router(warmup_router.router)
 app.include_router(auth_router.router)
 app.include_router(share_router.router)
 

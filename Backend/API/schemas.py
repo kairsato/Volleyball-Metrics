@@ -3,6 +3,23 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class VideoSegmentOut(BaseModel):
+    id: str
+    order: int
+    original_filename: str
+    duration_s: Optional[float] = None
+    # User-provided at upload time, defaulting to the video's own recording-
+    # date metadata when readable, else the upload date - see
+    # video_metadata.py and jobs_router.upload_video.
+    date_played: Optional[str] = None
+
+
+class VideoDateIn(BaseModel):
+    # ISO date string (YYYY-MM-DD) - lets a user correct an auto-detected or
+    # defaulted date_played after upload. See jobs_router.set_video_date.
+    date_played: str
+
+
 class JobOut(BaseModel):
     id: str
     original_filename: str
@@ -12,10 +29,24 @@ class JobOut(BaseModel):
     stage: Optional[str] = None
     completed_stages: list[str] = []
     stage_durations_s: dict[str, float] = {}
+    # When the pipeline last actually finished running - see Job.processed_at
+    # for why this is deliberately not the same thing as updated_at (which
+    # bumps on essentially any change to the job, not just a completed run).
+    processed_at: Optional[str] = None
     error: Optional[str] = None
     # The video's own length - None until it's been computed (see
-    # jobs_router._ensure_duration).
+    # jobs_router._ensure_duration). For a multi-video job this mirrors
+    # segment 0's own duration_s - see `videos` below for every segment.
     duration_s: Optional[float] = None
+    # Segment 0's own date_played, mirrored here for convenience - same
+    # reasoning as duration_s above.
+    date_played: Optional[str] = None
+    # Every video segment making up this job, in order - length 1 for an
+    # ordinary single-video job. See Backend/API/jobs.py's job_videos().
+    videos: list[VideoSegmentOut] = []
+    # Only meaningful when len(videos) > 1 - see calibration_router.py /
+    # CalibrationPanel.tsx's "segmented court selections" toggle.
+    segmented_calibration: bool = False
     # Video-list summary flags, computed fresh on every response rather than
     # stored on Job itself - cheap (see score.compute_summary), and this way
     # they can never drift out of sync with the player names/score data they
@@ -25,6 +56,15 @@ class JobOut(BaseModel):
     needs_player_id: bool = False
     needs_scoring_review: bool = False
     winner_team_name: Optional[str] = None
+    # Whether a warmup period has been confirmed for this video (see
+    # warmup.py) - when True, warmup_start_s/warmup_end_s below are the
+    # resolved absolute-video-time bounds every viewing surface (the player,
+    # thumbnails, rallies/stats) restricts itself to. Both null when no
+    # warmup period is confirmed, meaning the whole video is in play as
+    # before this feature existed.
+    warmup_confirmed: bool = False
+    warmup_start_s: Optional[float] = None
+    warmup_end_s: Optional[float] = None
     # 1-based position in the pipeline queue while this job is still
     # waiting for a worker to actually pick it up (see
     # pipeline.queue_position) - None once it's running, done, or never
@@ -37,6 +77,12 @@ class PlayerOut(BaseModel):
     name: Optional[str] = None
     appearances: int
     thumbnail_base64: Optional[str] = None
+    # Only set when the chosen thumbnail frame has another player's box
+    # crowding into the crop (see players._has_conflict) - the same crop
+    # with a white highlight box around the actual subject, so the
+    # player-identification page (the only place this is ever shown) can
+    # tell a human which of two people in frame is being named.
+    identification_thumbnail_base64: Optional[str] = None
     thumbnail_frame_idx: Optional[int] = None
     thumbnail_timestamp_s: Optional[float] = None
     ignored: bool = False
@@ -159,6 +205,27 @@ class CalibrationConfirmIn(BaseModel):
     confirmed: bool
 
 
+class WarmupConfigOut(BaseModel):
+    job_id: str
+    start_s: float
+    # None means "the end of the video" - still resolves to a concrete
+    # value via duration_s below for anything that needs one (e.g. a range
+    # slider's max), without baking the video's length into the saved
+    # config itself.
+    end_s: Optional[float] = None
+    confirmed: bool
+    duration_s: Optional[float] = None
+
+
+class WarmupConfigIn(BaseModel):
+    start_s: float
+    end_s: Optional[float] = None
+
+
+class WarmupConfirmIn(BaseModel):
+    confirmed: bool
+
+
 class CalibrationIn(BaseModel):
     middle_left: Point
     middle_right: Point
@@ -226,6 +293,101 @@ class ResultsOut(BaseModel):
     video_available: bool
 
 
+class BallTrajectoryPointOut(BaseModel):
+    # Seconds, relative to the warmup period's start (or the raw video's
+    # start if no warmup period is confirmed) - same basis as every other
+    # timestamp the frontend player deals in, see warmup.py.
+    t: float
+    # Real-world court coordinates in metres - same coordinate system as
+    # ActionQualityCategory instances' ball_court field, origin/axes per
+    # CourtDefinition.court's own convention. Can fall outside the
+    # court_length_m x court_width_m rectangle below (e.g. a serve from
+    # behind the baseline) - the frontend clamps/clips for display. Used
+    # for the small corner minimap (VideoPlayer's Minimap annotation).
+    # None when this job has no court calibration yet - the on-video Ball
+    # tracking annotation (px/py below) doesn't need it, only the minimap
+    # does, so a point isn't dropped entirely just for lacking this.
+    x: Optional[float] = None
+    y: Optional[float] = None
+    # Raw video-frame pixel coordinates of the same detection, when the
+    # frame it came from had one (None for a court-projected-only point) -
+    # used for VideoPlayer's Ball tracking annotation, which draws directly
+    # on the video at the ball's actual on-screen position rather than a
+    # corner diagram. Unlike x/y this is in the SOURCE video's own pixel
+    # space, not metres - the frontend maps it to displayed coordinates
+    # itself (see BallTrackingOverlay.tsx).
+    px: Optional[float] = None
+    py: Optional[float] = None
+    # Estimated height (metres) above the court's ground plane - same
+    # estimate_ball_height reading ball_speed.json itself carries, only
+    # ever populated when this job's calibration includes a solved camera
+    # pose. Used by BallTrajectoryOverlay's arc annotation to clip the
+    # drawn curve once the ball descends back below net height.
+    height_m: Optional[float] = None
+
+
+class BallTrajectoryOut(BaseModel):
+    job_id: str
+    points: list[BallTrajectoryPointOut] = []
+    # Metres - CalibrationPointsOut's own net_height_m when this job has
+    # been calibrated, CourtDefinition.court.NET_HEIGHT_M (the standard
+    # men's height) otherwise, same fallback calibration.py itself uses
+    # before a net height is explicitly set.
+    net_height_m: float
+    court_length_m: float
+    court_width_m: float
+    # The ORIGINAL uploaded video's own pixel resolution - what every
+    # px/py above is actually measured in (see BallTrajectoryPointOut).
+    # Deliberately NOT the currently-selected playback quality's resolution:
+    # a viewer can switch to a lower-bitrate rendition (see
+    # transcode.TRANSCODE_TIERS) while watching, which changes the <video>
+    # element's own decoded videoWidth/videoHeight but never touches these
+    # already-detected coordinates. An overlay that sized its SVG viewBox
+    # from the playing element instead of this field would silently
+    # misplace every annotation the moment someone picked a lower quality -
+    # the two only ever agreed by coincidence, when "original" happened to
+    # still be selected. None for a job whose ball_trajectory.json hasn't
+    # been written yet (ball_detection hasn't completed).
+    frame_w: Optional[int] = None
+    frame_h: Optional[int] = None
+
+
+class PlayerBoxOut(BaseModel):
+    stable_id: int
+    # None for a still-unnamed detection - the overlay falls back to
+    # "#<stable_id>", same label the server-rendered analysis.mp4 uses.
+    name: Optional[str] = None
+    # [x1, y1, x2, y2] in the source video's own pixel space - same mapping
+    # concern as BallTrajectoryPointOut.px/py above.
+    box: list[float]
+    # Real-world court position in metres, same coordinate system as
+    # BallTrajectoryPointOut.x/y - projected from the box's BOTTOM-CENTRE
+    # (the player's feet), not its centre: the homography maps the court's
+    # ground plane, so only a point actually on that plane projects to where
+    # the player is really standing. player_positions.json's own stored
+    # "court" field is centre-derived and lands well off-court for exactly
+    # that reason, so it deliberately isn't reused here. None when this job
+    # has no court calibration yet.
+    court_x: Optional[float] = None
+    court_y: Optional[float] = None
+
+
+class PlayerTrajectoryFrameOut(BaseModel):
+    # Same relative-to-warmup-start basis as BallTrajectoryPointOut.t.
+    t: float
+    players: list[PlayerBoxOut] = []
+
+
+class PlayerTrajectoryOut(BaseModel):
+    job_id: str
+    frames: list[PlayerTrajectoryFrameOut] = []
+    # Same meaning, and same reason it exists, as BallTrajectoryOut.frame_w/
+    # frame_h - the resolution every box above is measured in, independent
+    # of whatever playback quality is currently selected.
+    frame_w: Optional[int] = None
+    frame_h: Optional[int] = None
+
+
 class TeamPlayerOut(BaseModel):
     stable_id: int
     name: Optional[str] = None
@@ -274,6 +436,9 @@ class ScoreConfigOut(BaseModel):
     # module docstring for the "sideline view" assumption this corrects
     # for when the camera/region has the two sides mirrored.
     cv_reverse_direction: bool = False
+    # Minimum easyocr confidence (0-1) a digit-run detection needs before
+    # score_cv counts it - see score.DEFAULT_CONFIG's docstring.
+    ocr_min_confidence: float = 0.0
     compute_status: str = "idle"
     compute_error: Optional[str] = None
     # Whether the user has explicitly signed off on the scoring shown in
@@ -287,10 +452,41 @@ class ScoreConfigIn(BaseModel):
     team_y_id: Optional[str] = None
     ocr_region: Optional[dict] = None
     cv_reverse_direction: bool = False
+    ocr_min_confidence: float = 0.0
 
 
 class ScoreConfirmIn(BaseModel):
     confirmed: bool
+
+
+class OcrRegionIn(BaseModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class ScoreRegionTestIn(BaseModel):
+    t: float
+    region: OcrRegionIn
+    min_confidence: float = 0.0
+
+
+class OcrDetectionOut(BaseModel):
+    text: str
+    confidence: float
+
+
+class ScoreRegionTestOut(BaseModel):
+    left: Optional[int] = None
+    left_confidence: Optional[float] = None
+    right: Optional[int] = None
+    right_confidence: Optional[float] = None
+    # Every raw OCR detection in the crop, not just the two digit runs
+    # picked out as left/right - lets a human see what the model actually
+    # saw (a misread digit, a stray label, nothing at all) even when
+    # left/right come back None.
+    detections: list[OcrDetectionOut] = []
 
 
 class GameOut(BaseModel):
@@ -454,12 +650,30 @@ class PlayerRadarOut(BaseModel):
 
 
 class AuthStatusOut(BaseModel):
+    # Whether login is turned on globally - drives the Share dialog's own
+    # UI (the switch, password form, etc.), NOT whether any particular
+    # caller needs to authenticate - see login_required below for that.
     enabled: bool
     password_set: bool
     # ISO timestamp of when login will auto-disable itself (see
     # auth.check_share_expired) - None while login is off, or for a config
     # saved before this field existed.
     expires_at: Optional[str] = None
+    # Whether THIS caller specifically needs to log in - true only when
+    # `enabled` is true AND this request isn't from the LAN (see
+    # network.is_lan_request/main.py's AuthMiddleware, which has the same
+    # LAN bypass). LoginGate.tsx reads this, not `enabled`, to decide
+    # whether to show the login screen at all - a LAN visitor should never
+    # see one, even while Share is on for remote visitors.
+    login_required: bool = False
+    # Whether THIS caller is on the LAN - independent of whether login is
+    # even turned on (unlike login_required above, which is always false
+    # while `enabled` is false). SettingsMenu reads this to hide the Share
+    # menu item entirely for a remote visitor, not just block what it does -
+    # every /api/share/* call a remote visitor could reach from it is
+    # already blocked server-side (see main.py's LAN_ONLY_PATH_PREFIXES),
+    # this is purely about not showing a menu item that would just error.
+    is_lan: bool = True
 
 
 class CaptchaOut(BaseModel):
@@ -483,6 +697,10 @@ class SetPasswordIn(BaseModel):
 
 class SetEnabledIn(BaseModel):
     enabled: bool
+    # Only meaningful when enabled=True: how many days until Share
+    # auto-disables itself, or None for "Forever" (never auto-expires) - see
+    # the Share dialog's duration dropdown. Ignored when disabling.
+    duration_days: Optional[int] = 7
 
 
 class SuggestedPasswordOut(BaseModel):
@@ -503,6 +721,12 @@ class ShareStatusOut(BaseModel):
     upnp_enabled: bool
     external_ip: Optional[str] = None
     local_ip: str
+    hostname: Optional[str] = None
     ports: list[PortStatusOut]
     share_url: str
     last_error: Optional[str] = None
+
+
+class HostnameIn(BaseModel):
+    # None/blank clears it - see share.set_hostname.
+    hostname: Optional[str] = None

@@ -17,6 +17,7 @@ import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import type { SelectChangeEvent } from "@mui/material/Select";
+import Skeleton from "@mui/material/Skeleton";
 import Slider from "@mui/material/Slider";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
@@ -24,7 +25,6 @@ import Typography from "@mui/material/Typography";
 import { api } from "../lib/api";
 import { predictCourtGeometry } from "../lib/courtGeometry";
 import type { Job, Point, PredictedCourtGeometry } from "../lib/types";
-import { LoadingSpinner } from "./LoadingSpinner";
 import { LockOverlay } from "./LockOverlay";
 
 function LegendSwatch({ color }: { color: string }) {
@@ -699,7 +699,17 @@ export function CalibrationPanel({ job, onSaved }: CalibrationPanelProps) {
   }
 
   if (error) return <Alert severity="error">{error}</Alert>;
-  if (!frameUrl || !points) return <LoadingSpinner />;
+  if (!frameUrl || !points) {
+    return (
+      <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <Skeleton variant="text" width={220} height={40} sx={{ mb: 2, flexShrink: 0 }} />
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2.5} sx={{ flex: 1, minHeight: 0 }}>
+          <Skeleton variant="rounded" sx={{ flex: 1, minWidth: 0 }} />
+          <Skeleton variant="rounded" sx={{ width: 550, flexShrink: 0, height: "100%" }} />
+        </Stack>
+      </Box>
+    );
+  }
 
   const s = scale();
   const locked = confirmed;

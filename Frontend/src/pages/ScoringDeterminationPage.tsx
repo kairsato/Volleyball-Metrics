@@ -7,8 +7,9 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Job, Rally } from "../lib/types";
-import { LoadingSpinner } from "../components/LoadingSpinner";
 import { ScoreSection } from "../components/results/ScoreSection";
+import { ToolPageSkeleton } from "../components/Skeletons";
+import { toBoundedAbsolute, VideoPlayer } from "../components/VideoPlayer";
 
 // Same viewport-fit approach as ResultsView.tsx/PlayerIdentificationPage.tsx
 // - the page itself never scrolls, only ScoreSection's own content does.
@@ -60,26 +61,26 @@ export function ScoringDeterminationPage() {
     };
   }, [job]);
 
-  useEffect(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    function handleTimeUpdate() {
-      setCurrentTime(videoRef.current?.currentTime ?? 0);
-    }
-    el.addEventListener("timeupdate", handleTimeUpdate);
-    return () => el.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [job]);
+  // rallies (from /results) are already relative to the warmup period's
+  // start once one is confirmed - see Backend/API/warmup.py. currentTime
+  // (kept in sync via VideoPlayer's onTimeUpdate below) is relative the
+  // same way, so ScoreSection's rally highlighting (which compares it
+  // against rallies[i].start_time_s/end_time_s) lines up; seekTo converts
+  // back the other way since the raw <video> element only deals in
+  // absolute time.
+  const warmupStartS = job?.warmup_confirmed ? job.warmup_start_s ?? 0 : 0;
+  const warmupEndS = job?.warmup_confirmed ? job.warmup_end_s ?? Infinity : Infinity;
 
   function seekTo(timeS: number) {
     const el = videoRef.current;
     if (!el) return;
-    el.currentTime = timeS;
+    el.currentTime = toBoundedAbsolute(timeS, warmupStartS, warmupEndS);
     void el.play();
   }
 
   if (!jobId) return <Navigate to="/videos" replace />;
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
-  if (!job) return <LoadingSpinner />;
+  if (!job) return <ToolPageSkeleton />;
 
   if (job.status !== "complete") {
     return (
@@ -94,18 +95,17 @@ export function ScoringDeterminationPage() {
     );
   }
 
-  // height: "100%" plus objectFit "contain" lets this stretch to match the
-  // Scoring Determination + Estimated Score column without distorting the
-  // video - it letterboxes to whatever box it ends up in.
+  // height: "100%" lets this stretch to match the Scoring Determination +
+  // Estimated Score column without distorting the video - VideoPlayer
+  // itself letterboxes (objectFit: "contain") to whatever box it ends up in.
   const videoElement = (
-    <Box sx={{ height: "100%", borderRadius: 2, border: 1, borderColor: "divider", bgcolor: "#000", overflow: "hidden", lineHeight: 0 }}>
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-      <Box
-        component="video"
-        ref={videoRef}
-        controls
+    <Box sx={{ height: "100%" }}>
+      <VideoPlayer
+        videoRef={videoRef}
         src={api.sourceVideoUrl(jobId)}
-        sx={{ width: "100%", height: "100%", display: "block", objectFit: "contain" }}
+        boundStartS={warmupStartS}
+        boundEndS={warmupEndS}
+        onTimeUpdate={setCurrentTime}
       />
     </Box>
   );

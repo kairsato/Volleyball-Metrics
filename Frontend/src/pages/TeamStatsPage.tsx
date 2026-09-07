@@ -4,14 +4,15 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import Grid from "@mui/material/Grid";
+import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { Link as RouterLink, Navigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { TeamStatsOut } from "../lib/types";
-import { LoadingSpinner } from "../components/LoadingSpinner";
 import { RadarChart } from "../components/results/RadarChart";
+import { RowsSkeleton, StatTilesSkeleton } from "../components/Skeletons";
 
 const ACTION_COLORS: Record<string, string> = {
   serve: "#3b82f6",
@@ -74,7 +75,25 @@ export function TeamStatsPage() {
 
   if (!teamId) return <Navigate to="/teams" replace />;
   if (error) return <Alert severity="error">{error}</Alert>;
-  if (!stats) return <LoadingSpinner minHeight={200} />;
+  if (!stats) {
+    return (
+      <Box sx={{ maxWidth: 900 }}>
+        <Button component={RouterLink} to="/teams" startIcon={<ArrowBackIcon />} sx={{ mb: 2 }}>
+          Teams
+        </Button>
+        <Skeleton variant="text" width={220} height={52} sx={{ mb: 3 }} />
+        <Box sx={{ mb: 4 }}>
+          <StatTilesSkeleton count={4} size={{ xs: 6, sm: 3 }} />
+        </Box>
+        <Skeleton variant="text" width={80} sx={{ mb: 1 }} />
+        <Box sx={{ mb: 4 }}>
+          <RowsSkeleton count={3} />
+        </Box>
+        <Skeleton variant="text" width={80} sx={{ mb: 1 }} />
+        <RowsSkeleton count={3} />
+      </Box>
+    );
+  }
 
   const hitsByTypeTotal = Object.values(stats.hits_by_type).reduce((a, b) => a + b, 0);
   const hasRecord = stats.videos_with_scoring > 0;

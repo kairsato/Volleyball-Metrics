@@ -181,7 +181,12 @@ def renderAnnotatedVideo(video_path, output_path):
         ball_entry = ball_by_frame.get(frame_idx)
         current_ball = None
 
-        if ball_entry is not None:
+        # ball_speed.json is dense (one entry per frame - see
+        # BallDetection.ballDetection.build_speed_log), so ball_entry itself
+        # is basically never None; a frame the ball tracker couldn't place
+        # at all still gets an entry, just with pixel/court left null - skip
+        # those the same way a genuinely missing entry would be skipped.
+        if ball_entry is not None and ball_entry["pixel"] is not None:
             pixel_trail.append(ball_entry["pixel"])
             if ball_entry["court"] is not None:
                 court_trail.append(ball_entry["court"])

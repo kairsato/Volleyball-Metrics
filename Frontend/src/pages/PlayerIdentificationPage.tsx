@@ -7,8 +7,8 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Job } from "../lib/types";
-import { LoadingSpinner } from "../components/LoadingSpinner";
 import { UnidentifiedPlayersSection } from "../components/results/UnidentifiedPlayersSection";
+import { ToolPageSkeleton } from "../components/Skeletons";
 
 // Same viewport-fit approach as ResultsView.tsx/ScoringDeterminationPage.tsx
 // - the page itself never scrolls, only the players area below the header
@@ -78,7 +78,7 @@ export function PlayerIdentificationPage({ onJobUpdated }: PlayerIdentificationP
 
   if (!jobId) return <Navigate to="/videos" replace />;
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
-  if (!job) return <LoadingSpinner />;
+  if (!job) return <ToolPageSkeleton />;
 
   if (job.status !== "complete") {
     return (

@@ -7,12 +7,12 @@ import FormControl from "@mui/material/FormControl";
 import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
+import Skeleton from "@mui/material/Skeleton";
 import Slider from "@mui/material/Slider";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { api } from "../../lib/api";
 import type { ActionQualityCategory, ActionQualityOut, ResultsOut } from "../../lib/types";
-import { LoadingSpinner } from "../LoadingSpinner";
 import { CourtMap } from "./CourtMap";
 import { playerInsight, type ActionCategoryKey } from "./insights";
 import { recomputeCategory } from "./weights";
@@ -217,9 +217,27 @@ export function AnalyticsTab({ results, onSeek }: AnalyticsTabProps) {
 
   if (qualityLoading) {
     return (
-      <Card variant="outlined">
-        <LoadingSpinner minHeight={140} />
-      </Card>
+      <Box>
+        <Skeleton variant="rounded" width={200} height={40} sx={{ mb: 2 }} />
+        {CATEGORY_KEYS.map((key) => (
+          <Card key={key} variant="outlined" sx={{ p: 2.5, mb: 3 }}>
+            <Stack direction="row" sx={{ alignItems: "baseline", justifyContent: "space-between", mb: 1.5 }}>
+              <Skeleton variant="text" width={80} />
+              <Skeleton variant="text" width={50} height={32} />
+            </Stack>
+            <Stack spacing={1.5} sx={{ mb: 2 }}>
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} variant="rounded" height={20} />
+              ))}
+            </Stack>
+            <Stack spacing={1}>
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} variant="text" />
+              ))}
+            </Stack>
+          </Card>
+        ))}
+      </Box>
     );
   }
 

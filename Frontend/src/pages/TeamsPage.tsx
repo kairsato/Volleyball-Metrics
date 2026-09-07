@@ -10,6 +10,7 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
+import Grid from "@mui/material/Grid";
 import IconButton from "@mui/material/IconButton";
 import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
@@ -22,8 +23,8 @@ import GroupsIcon from "@mui/icons-material/Groups";
 import { Link as RouterLink } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Job, TeamEntry } from "../lib/types";
-import { LoadingSpinner } from "../components/LoadingSpinner";
 import { PageHeader } from "../components/PageHeader";
+import { CardTilesSkeleton } from "../components/Skeletons";
 import { PlayerPhotoCarousel } from "../components/PlayerPhotoCarousel";
 
 // Matches the Players page's card size (150x280) - 6 of them side by side
@@ -96,6 +97,13 @@ async function loadThumbnailsByName(completeJobs: Job[]): Promise<Map<string, st
   }
   return byName;
 }
+
+// Module-level, so it survives unmount/remount - see PlayersPage's identical
+// identifiedPlayersCache for why: a repeat visit to this page shows the last
+// loaded thumbnails instantly (stale-while-revalidate) instead of every team
+// card's photos reverting to placeholder icons until getPlayers reruns for
+// every completed job again.
+const thumbnailsByNameCache = new Map<string, Map<string, string[]>>();
 
 interface TeamDialogProps {
   open: boolean;
@@ -190,7 +198,16 @@ function TeamCard({
   onRequestDelete: () => void;
 }) {
   return (
-    <Card variant="outlined" sx={{ position: "relative", width: TEAM_BOX_WIDTH, height: TEAM_BOX_HEIGHT, overflow: "hidden" }}>
+    <Card
+      variant="outlined"
+      sx={{
+        position: "relative",
+        width: "100%",
+        maxWidth: TEAM_BOX_WIDTH,
+        aspectRatio: `${TEAM_BOX_WIDTH} / ${TEAM_BOX_HEIGHT}`,
+        overflow: "hidden",
+      }}
+    >
       <Stack direction="row" spacing={0.5} sx={{ position: "absolute", top: 6, right: 6, zIndex: 1 }}>
         <IconButton
           size="small"
@@ -261,9 +278,14 @@ interface TeamsPageProps {
 }
 
 export function TeamsPage({ jobs }: TeamsPageProps) {
+  const completeJobs = jobs.filter((j) => j.status === "complete");
+  const completeJobIds = completeJobs.map((j) => j.id).join(",");
+
   const [teams, setTeams] = useState<TeamEntry[] | null>(null);
   const [roster, setRoster] = useState<string[]>([]);
-  const [thumbnailsByName, setThumbnailsByName] = useState<Map<string, string[]>>(new Map());
+  const [thumbnailsByName, setThumbnailsByName] = useState<Map<string, string[]>>(
+    () => thumbnailsByNameCache.get(completeJobIds) ?? new Map(),
+  );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<TeamEntry | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TeamEntry | null>(null);
@@ -272,9 +294,6 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("name");
 
-  const completeJobs = jobs.filter((j) => j.status === "complete");
-  const completeJobIds = completeJobs.map((j) => j.id).join(",");
-
   useEffect(() => {
     api.getTeams().then((res) => setTeams(res.teams));
     api.getRoster().then((res) => setRoster(res.players));
@@ -282,7 +301,15 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
 
   useEffect(() => {
     let cancelled = false;
-    loadThumbnailsByName(completeJobs).then((res) => !cancelled && setThumbnailsByName(res));
+    // Show a cached result (if any) immediately - see PlayersPage's identical
+    // pattern. loadThumbnailsByName below still runs regardless, so this is
+    // stale-while-revalidate, not a stale dead end.
+    setThumbnailsByName(thumbnailsByNameCache.get(completeJobIds) ?? new Map());
+    loadThumbnailsByName(completeJobs).then((res) => {
+      if (cancelled) return;
+      thumbnailsByNameCache.set(completeJobIds, res);
+      setThumbnailsByName(res);
+    });
     return () => {
       cancelled = true;
     };
@@ -330,7 +357,7 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
             placeholder="Search teams..."
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            sx={{ minWidth: 240 }}
+            sx={{ width: { xs: "100%", sm: 240 } }}
           />
           <TextField
             select
@@ -338,7 +365,7 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
             label="Sort by"
             value={sortOrder}
             onChange={(event) => setSortOrder(event.target.value as SortOrder)}
-            sx={{ minWidth: 180 }}
+            sx={{ width: { xs: "100%", sm: 180 } }}
           >
             <MenuItem value="name">Name</MenuItem>
             <MenuItem value="player_count">Player count</MenuItem>
@@ -347,7 +374,12 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
       </PageHeader>
 
       {teams === null ? (
-        <LoadingSpinner minHeight={160} />
+        <CardTilesSkeleton
+          width="100%"
+          maxWidth={TEAM_BOX_WIDTH}
+          aspectRatio={`${TEAM_BOX_WIDTH} / ${TEAM_BOX_HEIGHT}`}
+          count={3}
+        />
       ) : (
         <>
           {teams.length === 0 && (
@@ -358,17 +390,18 @@ export function TeamsPage({ jobs }: TeamsPageProps) {
           {teams.length > 0 && displayedTeams.length === 0 && (
             <Typography color="text.secondary">No teams match your search.</Typography>
           )}
-          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+          <Grid container spacing={2}>
             {displayedTeams.map((team) => (
-              <TeamCard
-                key={team.id}
-                team={team}
-                thumbnailsByName={thumbnailsByName}
-                onEdit={() => setEditTarget(team)}
-                onRequestDelete={() => setDeleteTarget(team)}
-              />
+              <Grid key={team.id} size={12} sx={{ maxWidth: TEAM_BOX_WIDTH }}>
+                <TeamCard
+                  team={team}
+                  thumbnailsByName={thumbnailsByName}
+                  onEdit={() => setEditTarget(team)}
+                  onRequestDelete={() => setDeleteTarget(team)}
+                />
+              </Grid>
             ))}
-          </Box>
+          </Grid>
         </>
       )}
 

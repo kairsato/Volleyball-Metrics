@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import auth, share
+from .. import auth, network, share
 from ..schemas import AuthStatusOut, CaptchaOut, LoginIn, LoginOut, SetEnabledIn, SetPasswordIn, SuggestedPasswordOut
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -14,8 +14,10 @@ def _token_from_request(request: Request) -> str:
 
 
 @router.get("/status", response_model=AuthStatusOut)
-async def get_status():
-    return AuthStatusOut(**auth.status())
+async def get_status(request: Request):
+    status = auth.status()
+    is_lan = network.is_lan_request(request)
+    return AuthStatusOut(**status, login_required=status["enabled"] and not is_lan, is_lan=is_lan)
 
 
 @router.get("/captcha", response_model=CaptchaOut)
@@ -66,7 +68,7 @@ async def set_password(body: SetPasswordIn):
 @router.post("/enable", response_model=AuthStatusOut)
 async def set_enabled(body: SetEnabledIn):
     try:
-        auth.set_enabled(body.enabled)
+        auth.set_enabled(body.enabled, body.duration_days)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

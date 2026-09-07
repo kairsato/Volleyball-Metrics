@@ -32,6 +32,37 @@ function matchesStatusFilter(job: Job, filter: StatusFilter): boolean {
   }
 }
 
+type DateFilterMode = "any" | "exact" | "before" | "after";
+
+const DATE_FILTER_OPTIONS: { value: DateFilterMode; label: string }[] = [
+  { value: "any", label: "Any date" },
+  { value: "exact", label: "On" },
+  { value: "before", label: "Before" },
+  { value: "after", label: "After" },
+];
+
+// Local calendar date (YYYY-MM-DD) rather than a UTC one, so "uploaded
+// today" matches what the user's own clock says today is - and so this
+// compares lexicographically the same way an <input type="date"> value
+// does, without pulling in a date library for what's just a string compare.
+function toDateKey(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function matchesDateFilter(job: Job, mode: DateFilterMode, dateValue: string): boolean {
+  if (mode === "any" || !dateValue) return true;
+  const jobDate = toDateKey(job.created_at);
+  switch (mode) {
+    case "exact":
+      return jobDate === dateValue;
+    case "before":
+      return jobDate < dateValue;
+    case "after":
+      return jobDate > dateValue;
+  }
+}
+
 interface VideosPageProps {
   jobs: Job[];
   onSelectJob: (jobId: string) => void;
@@ -42,15 +73,18 @@ interface VideosPageProps {
 export function VideosPage({ jobs, onSelectJob, onAddVideo, onDeleteJob }: VideosPageProps) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>("any");
+  const [dateFilterValue, setDateFilterValue] = useState("");
 
   const filteredJobs = useMemo(() => {
     const query = search.trim().toLowerCase();
     return jobs.filter(
       (job) =>
         matchesStatusFilter(job, statusFilter) &&
+        matchesDateFilter(job, dateFilterMode, dateFilterValue) &&
         (query === "" || job.original_filename.toLowerCase().includes(query)),
     );
-  }, [jobs, search, statusFilter]);
+  }, [jobs, search, statusFilter, dateFilterMode, dateFilterValue]);
 
   return (
     <Box>
@@ -61,7 +95,7 @@ export function VideosPage({ jobs, onSelectJob, onAddVideo, onDeleteJob }: Video
             placeholder="Search videos..."
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            sx={{ minWidth: 240 }}
+            sx={{ width: { xs: "100%", sm: 240 } }}
           />
           <TextField
             select
@@ -69,7 +103,7 @@ export function VideosPage({ jobs, onSelectJob, onAddVideo, onDeleteJob }: Video
             label="Status"
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
-            sx={{ minWidth: 180 }}
+            sx={{ width: { xs: "100%", sm: 180 } }}
           >
             {STATUS_FILTER_OPTIONS.map((opt) => (
               <MenuItem key={opt.value} value={opt.value}>
@@ -77,6 +111,29 @@ export function VideosPage({ jobs, onSelectJob, onAddVideo, onDeleteJob }: Video
               </MenuItem>
             ))}
           </TextField>
+          <TextField
+            select
+            size="small"
+            label="Uploaded"
+            value={dateFilterMode}
+            onChange={(event) => setDateFilterMode(event.target.value as DateFilterMode)}
+            sx={{ width: { xs: "100%", sm: 130 } }}
+          >
+            {DATE_FILTER_OPTIONS.map((opt) => (
+              <MenuItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </MenuItem>
+            ))}
+          </TextField>
+          {dateFilterMode !== "any" && (
+            <TextField
+              type="date"
+              size="small"
+              value={dateFilterValue}
+              onChange={(event) => setDateFilterValue(event.target.value)}
+              sx={{ width: { xs: "100%", sm: 170 } }}
+            />
+          )}
         </Stack>
       </PageHeader>
 

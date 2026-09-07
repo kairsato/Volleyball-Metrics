@@ -77,12 +77,25 @@ def _sample_offsets() -> list[float]:
 # does much better on a large, high-contrast crop than on the raw pixels.
 # CLAHE (adaptive local contrast) rather than a flat threshold copes better
 # with uneven gym lighting across the region without blowing out
-# highlights. Padding the crop was tried and made things *worse* in
-# testing (more background context, more false-positive digit-like text),
-# so the crop stays exactly the user-marked region.
+# highlights. Padding the crop with more *frame content* was tried and made
+# things worse in testing (more background, more false-positive digit-like
+# text) - EDGE_PAD_PX below is a different thing entirely (see _preprocess).
 UPSCALE_FACTOR = 6
 CLAHE_CLIP_LIMIT = 3.0
 CLAHE_TILE_GRID = (8, 8)
+
+# A few replicated-edge pixels added before upscaling - purely to avoid
+# cubic-interpolation ringing right at the crop's own boundary, which is
+# what made two near-identical user-marked regions (one a couple of pixels
+# tighter than the other) sometimes read a digit confidently and sometimes
+# miss it completely: a stroke sitting close to the marked edge interpolates
+# differently depending on exactly where that edge falls sub-pixel. This is
+# NOT the "pad with more frame content" padding the comment above already
+# found made things worse - BORDER_REPLICATE only repeats each edge's own
+# already-included pixels outward, adding zero new visual information (no
+# extra background, no extra text), just a softer, more stable boundary for
+# the resize to work from.
+EDGE_PAD_PX = 3
 
 _reader = None
 
@@ -109,9 +122,10 @@ def _read_frame(cap: cv2.VideoCapture, timestamp_s: float, region: dict) -> Opti
 
 
 def _preprocess(crop_bgr: np.ndarray) -> np.ndarray:
+    padded = cv2.copyMakeBorder(crop_bgr, EDGE_PAD_PX, EDGE_PAD_PX, EDGE_PAD_PX, EDGE_PAD_PX, cv2.BORDER_REPLICATE)
     big = cv2.resize(
-        crop_bgr,
-        (crop_bgr.shape[1] * UPSCALE_FACTOR, crop_bgr.shape[0] * UPSCALE_FACTOR),
+        padded,
+        (padded.shape[1] * UPSCALE_FACTOR, padded.shape[0] * UPSCALE_FACTOR),
         interpolation=cv2.INTER_CUBIC,
     )
     gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
@@ -119,7 +133,7 @@ def _preprocess(crop_bgr: np.ndarray) -> np.ndarray:
     return clahe.apply(gray)
 
 
-def _ocr_crop(image: Optional[np.ndarray]) -> tuple[Optional[int], Optional[int]]:
+def _ocr_crop_detailed(image: Optional[np.ndarray], min_confidence: float = 0.0) -> dict:
     """Reads the left- and right-side digit groups from an already-cropped
     scoreboard image, independently - each is None if that side's digits
     weren't legible in this particular sample, rather than the whole
@@ -140,30 +154,78 @@ def _ocr_crop(image: Optional[np.ndarray]) -> tuple[Optional[int], Optional[int]
 
     Takes an image rather than a timestamp/region - see compute_cv, which
     decodes every frame it needs up front and only calls this (the actual
-    model-inference step) afterward, over all of them in one pass."""
+    model-inference step) afterward, over all of them in one pass.
+
+    Returns every raw detection (any text, not just clean digit runs) plus
+    each side's own OCR confidence alongside its digit - compute_cv only
+    ever needs the two digit values (see _ocr_crop below), but the Setup
+    tab's one-off "Test frame" button (score_router.test_region) surfaces
+    all of this to a human, since a wrong region or bad lighting often
+    reads as a *confident* wrong digit, not just a missing one.
+
+    min_confidence (see ScoreConfig.ocr_min_confidence) discards a side's
+    candidate digit-run below that confidence *before* picking the
+    closest-to-the-edge one - the same as that side not having been read at
+    all, rather than trusting a low-confidence guess. `detections` below is
+    never filtered by it, so a human can still see everything the model
+    saw, including whatever got discarded."""
     if image is None:
-        return None, None
+        return {"left": None, "left_confidence": None, "right": None, "right_confidence": None, "detections": []}
 
     preprocessed = _preprocess(image)
     detections = _get_reader().readtext(preprocessed)
     mid_x = preprocessed.shape[1] / 2
 
-    left_candidates: list[tuple[float, int]] = []
-    right_candidates: list[tuple[float, int]] = []
-    for bbox, text, _confidence in detections:
-        if not re.fullmatch(r"\d+", text):
+    left_candidates: list[tuple[float, int, float]] = []
+    right_candidates: list[tuple[float, int, float]] = []
+    raw_detections: list[dict] = []
+    for bbox, text, confidence in detections:
+        raw_detections.append({"text": text, "confidence": float(confidence)})
+        if not re.fullmatch(r"\d+", text) or confidence < min_confidence:
             continue
         center_x = sum(p[0] for p in bbox) / len(bbox)
         value = int(text)
-        (left_candidates if center_x < mid_x else right_candidates).append((center_x, value))
+        (left_candidates if center_x < mid_x else right_candidates).append((center_x, value, float(confidence)))
 
     # If a side somehow has more than one digit-run detected (stray noise -
     # a jersey number, a clock, a scoreboard label), keep the one closest
     # to that side's own edge of the region, since a genuine score digit
     # sits at the outer edge of its half, not near the middle.
-    left = min(left_candidates, key=lambda c: c[0])[1] if left_candidates else None
-    right = max(right_candidates, key=lambda c: c[0])[1] if right_candidates else None
-    return left, right
+    left = min(left_candidates, key=lambda c: c[0]) if left_candidates else None
+    right = max(right_candidates, key=lambda c: c[0]) if right_candidates else None
+    return {
+        "left": left[1] if left else None,
+        "left_confidence": left[2] if left else None,
+        "right": right[1] if right else None,
+        "right_confidence": right[2] if right else None,
+        "detections": raw_detections,
+    }
+
+
+def _ocr_crop(image: Optional[np.ndarray], min_confidence: float = 0.0) -> tuple[Optional[int], Optional[int]]:
+    result = _ocr_crop_detailed(image, min_confidence)
+    return result["left"], result["right"]
+
+
+def test_region(video_path: Path, timestamp_s: float, region: dict, min_confidence: float = 0.0) -> dict:
+    """One-off, on-demand OCR read of a single exact frame - what the Setup
+    tab's Scoreboard Identification Region "Test frame" button calls, so a
+    human can sanity-check a candidate region (and see the model's own
+    confidence and everything else it read) before saving it, rather than
+    only finding out it was wrong/too tight after a full compute_cv pass
+    across every rally."""
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            raise ValueError("Could not open video")
+        crop = _read_frame(cap, timestamp_s, region)
+    finally:
+        cap.release()
+
+    if crop is None:
+        raise ValueError("Could not read a frame at that time/region")
+
+    return _ocr_crop_detailed(crop, min_confidence)
 
 
 def _modal_side(values: list[Optional[int]]) -> Optional[int]:
@@ -233,6 +295,7 @@ def compute_cv(output_path: Path, video_path: Optional[Path], rally_range: Optio
     # module's docstring can be backwards for some camera angles/region
     # placements, so this is user-adjustable rather than hardcoded.
     left_side, right_side = ("B", "A") if cfg.get("cv_reverse_direction") else ("A", "B")
+    min_confidence = cfg.get("ocr_min_confidence") or 0.0
 
     if rally_range is not None and existing is not None:
         target_rallies = [r for r in rallies if rally_range[0] <= r["rally_index"] <= rally_range[1]]
@@ -275,7 +338,7 @@ def compute_cv(output_path: Path, video_path: Optional[Path], rally_range: Optio
     readings: dict[int, tuple[Optional[int], Optional[int]]] = {}
     for rally in target_rallies:
         start, end = crop_indexes[rally["rally_index"]]
-        samples = [_ocr_crop(crop) for crop in crops[start:end]]
+        samples = [_ocr_crop(crop, min_confidence) for crop in crops[start:end]]
         left_val = _modal_side([s[0] for s in samples])
         right_val = _modal_side([s[1] for s in samples])
         readings[rally["rally_index"]] = (left_val, right_val)

@@ -8,6 +8,7 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import Grid from "@mui/material/Grid";
+import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
@@ -16,8 +17,8 @@ import PersonIcon from "@mui/icons-material/Person";
 import { Link as RouterLink, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Job, RadarPoint } from "../lib/types";
-import { LoadingSpinner } from "../components/LoadingSpinner";
 import { RadarChart } from "../components/results/RadarChart";
+import { RowsSkeleton, StatTilesSkeleton } from "../components/Skeletons";
 
 const ACTION_COLORS: Record<string, string> = {
   serve: "#3b82f6",
@@ -191,7 +192,17 @@ export function PlayerStatsPage({ jobs }: PlayerStatsPageProps) {
       </Stack>
 
       {profile === null ? (
-        <LoadingSpinner minHeight={200} />
+        <>
+          <Stack direction="row" spacing={3} sx={{ alignItems: "center", mb: 4 }}>
+            <Skeleton variant="rounded" width={96} height={120} />
+            <Skeleton variant="text" width={200} height={48} />
+          </Stack>
+          <Box sx={{ mb: 4 }}>
+            <StatTilesSkeleton count={4} size={{ xs: 6, sm: 3 }} />
+          </Box>
+          <Skeleton variant="text" width={80} sx={{ mb: 1 }} />
+          <RowsSkeleton count={3} />
+        </>
       ) : (
         <>
           <Stack direction="row" spacing={3} sx={{ alignItems: "center", mb: 4 }}>

@@ -1,7 +1,7 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from .. import share
-from ..schemas import ShareStatusOut
+from ..schemas import HostnameIn, ShareStatusOut
 
 router = APIRouter(prefix="/api/share", tags=["share"])
 
@@ -20,4 +20,13 @@ async def enable_upnp():
 @router.post("/upnp/disable", response_model=ShareStatusOut)
 async def disable_upnp():
     share.disable_upnp()
+    return ShareStatusOut(**share.get_share_status())
+
+
+@router.post("/hostname", response_model=ShareStatusOut)
+async def set_hostname(body: HostnameIn):
+    try:
+        share.set_hostname(body.hostname)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ShareStatusOut(**share.get_share_status())

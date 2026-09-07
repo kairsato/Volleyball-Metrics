@@ -8,13 +8,13 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import MenuItem from "@mui/material/MenuItem";
+import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { Link as RouterLink } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Job, TeamEntry } from "../lib/types";
-import { LoadingSpinner } from "../components/LoadingSpinner";
 import { PageHeader } from "../components/PageHeader";
 import { PlayerPhotoCarousel } from "../components/PlayerPhotoCarousel";
 
@@ -70,6 +70,14 @@ async function loadIdentifiedPlayers(completeJobs: Job[]): Promise<IdentifiedPla
   return Array.from(byName.values()).sort((a, b) => b.totalHits - a.totalHits);
 }
 
+// Module-level, so it survives unmount/remount - a repeat visit to this page
+// (nav away and back) with the same set of completed jobs shows the last
+// result instantly instead of re-running every completed job's getResults +
+// getPlayers calls from scratch again. Keyed by the completed-job-id set;
+// still revalidated in the background on every mount (see the effect below),
+// so this only removes the *wait*, not the eventual refetch.
+const identifiedPlayersCache = new Map<string, IdentifiedPlayer[]>();
+
 // Shared by every player tile on this page so the whole grid reads as one
 // consistent set of same-sized cards.
 const PLAYER_TILE_WIDTH = 150;
@@ -77,7 +85,15 @@ const PLAYER_TILE_HEIGHT = 280;
 
 function IdentifiedPlayerCard({ player }: { player: IdentifiedPlayer }) {
   return (
-    <Card variant="outlined" sx={{ position: "relative", width: PLAYER_TILE_WIDTH, height: PLAYER_TILE_HEIGHT, overflow: "hidden" }}>
+    <Card
+      variant="outlined"
+      sx={{
+        position: "relative",
+        width: "100%",
+        aspectRatio: `${PLAYER_TILE_WIDTH} / ${PLAYER_TILE_HEIGHT}`,
+        overflow: "hidden",
+      }}
+    >
       <CardActionArea component={RouterLink} to={`/player?name=${encodeURIComponent(player.name)}`} sx={{ height: "100%" }}>
         <Box sx={{ width: "100%", height: "100%", bgcolor: "action.hover" }}>
           <PlayerPhotoCarousel thumbnails={player.thumbnails} alt={player.name} />
@@ -174,18 +190,23 @@ interface PlayersPageProps {
 // at. Naming/merging/ignoring still-unidentified detections happens on
 // that per-video Setup page now, not here.
 export function PlayersPage({ jobs }: PlayersPageProps) {
-  const [players, setPlayers] = useState<IdentifiedPlayer[] | null>(null);
+  const completeJobs = jobs.filter((j) => j.status === "complete");
+  const completeJobIds = completeJobs.map((j) => j.id).join(",");
+
+  const [players, setPlayers] = useState<IdentifiedPlayer[] | null>(
+    () => identifiedPlayersCache.get(completeJobIds) ?? null,
+  );
   const [roster, setRoster] = useState<string[]>([]);
   const [teams, setTeams] = useState<TeamEntry[]>([]);
   const [addPlayerOpen, setAddPlayerOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [teamFilter, setTeamFilter] = useState<string>("all");
 
-  const completeJobs = jobs.filter((j) => j.status === "complete");
-  const completeJobIds = completeJobs.map((j) => j.id).join(",");
-
   const refresh = useCallback(() => {
-    return loadIdentifiedPlayers(completeJobs).then(setPlayers);
+    return loadIdentifiedPlayers(completeJobs).then((result) => {
+      identifiedPlayersCache.set(completeJobIds, result);
+      setPlayers(result);
+    });
     // completeJobIds is a stable proxy for completeJobs's identity - re-fetching
     // on every jobs poll (which creates new array/object references every 3s)
     // would otherwise refetch results/players for every completed video constantly.
@@ -194,7 +215,10 @@ export function PlayersPage({ jobs }: PlayersPageProps) {
 
   useEffect(() => {
     let cancelled = false;
-    setPlayers(null);
+    // Show a cached result (if any) immediately rather than flashing the
+    // loading skeleton on every revisit - refresh() below still runs
+    // regardless, so this is stale-while-revalidate, not a stale dead end.
+    setPlayers(identifiedPlayersCache.get(completeJobIds) ?? null);
     refresh().catch(() => !cancelled && undefined);
     return () => {
       cancelled = true;
@@ -253,7 +277,7 @@ export function PlayersPage({ jobs }: PlayersPageProps) {
             placeholder="Search players..."
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            sx={{ minWidth: 240 }}
+            sx={{ width: { xs: "100%", sm: 240 } }}
           />
           <TextField
             select
@@ -261,7 +285,7 @@ export function PlayersPage({ jobs }: PlayersPageProps) {
             label="Team"
             value={teamFilter}
             onChange={(event) => setTeamFilter(event.target.value)}
-            sx={{ minWidth: 180 }}
+            sx={{ width: { xs: "100%", sm: 180 } }}
           >
             <MenuItem value="all">All players</MenuItem>
             {teams.map((team) => (
@@ -274,11 +298,34 @@ export function PlayersPage({ jobs }: PlayersPageProps) {
       </PageHeader>
 
       {players === null ? (
-        <LoadingSpinner minHeight={160} />
+        // Same grid the real cards render into (see below) - so the loading
+        // state already has the right shape/column count instead of
+        // rearranging itself the moment real data shows up.
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: `repeat(auto-fill, minmax(${PLAYER_TILE_WIDTH}px, 1fr))`,
+            gap: 2,
+          }}
+        >
+          {Array.from({ length: 10 }).map((_, i) => (
+            <Skeleton
+              key={i}
+              variant="rounded"
+              sx={{ width: "100%", aspectRatio: `${PLAYER_TILE_WIDTH} / ${PLAYER_TILE_HEIGHT}` }}
+            />
+          ))}
+        </Box>
       ) : displayedPlayers.length === 0 ? (
         <Typography color="text.secondary">No players match your search/filter.</Typography>
       ) : (
-        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: `repeat(auto-fill, minmax(${PLAYER_TILE_WIDTH}px, 1fr))`,
+            gap: 2,
+          }}
+        >
           {displayedPlayers.map((player) => (
             <IdentifiedPlayerCard key={player.name} player={player} />
           ))}

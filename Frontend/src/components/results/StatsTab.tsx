@@ -4,12 +4,13 @@ import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
 import Chip from "@mui/material/Chip";
 import Grid from "@mui/material/Grid";
+import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import { api } from "../../lib/api";
 import type { MatchupOut, ResultsOut, ScoreOut, TeamEntry } from "../../lib/types";
-import { LoadingSpinner } from "../LoadingSpinner";
+import { RowsSkeleton, StatTilesSkeleton } from "../Skeletons";
 import { RadarChart } from "./RadarChart";
 import type { FlatEvent } from "./types";
 import { WinLossTrend } from "./WinLossTrend";
@@ -108,7 +109,20 @@ export function StatsTab({ jobId, results, flatEvents, onSeek, onJumpToAction }:
     };
   }, [jobId]);
 
-  if (loading) return <LoadingSpinner minHeight={200} />;
+  if (loading) {
+    return (
+      <Box>
+        <Skeleton variant="rounded" height={90} sx={{ mb: 3 }} />
+        <Box sx={{ mb: 3 }}>
+          <StatTilesSkeleton count={4} />
+        </Box>
+        <Skeleton variant="text" width={100} sx={{ mb: 1 }} />
+        <Skeleton variant="rounded" height={10} sx={{ mb: 3, borderRadius: 999 }} />
+        <Skeleton variant="text" width={140} sx={{ mb: 1 }} />
+        <RowsSkeleton count={6} />
+      </Box>
+    );
+  }
 
   const scored = score && score.config.method !== "none" ? summarizeScore(score, teams) : null;
 

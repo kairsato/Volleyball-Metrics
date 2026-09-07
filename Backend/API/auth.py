@@ -36,13 +36,17 @@ DEFAULT_CONFIG = {
     "password_salt": None,
     "failed_attempts": 0,
     "locked_until": None,
-    # Set to now+MAX_SHARE_DURATION_DAYS whenever set_enabled(True) is
-    # called, cleared on any disable - bounds how long the app stays
+    # Set from set_enabled(True)'s duration_days whenever Share turns on,
+    # cleared on any disable - bounds how long the app stays
     # reachable-with-a-password rather than relying on someone remembering
-    # to turn it back off. See check_share_expired().
+    # to turn it back off, unless the user explicitly picked "Forever" (see
+    # the Share dialog's duration dropdown), which leaves this None while
+    # still enabled. See check_share_expired().
     "share_expires_at": None,
 }
 
+# set_enabled(True)'s default when the caller (the Share dialog's duration
+# dropdown) doesn't specify one explicitly.
 MAX_SHARE_DURATION_DAYS = 7
 
 # A password has to clear this bar before it can be set at all - deliberately
@@ -60,12 +64,14 @@ GENERATED_PASSWORD_LENGTH = 16
 # never read character-by-character, so the full symbol set is fair game.
 _GENERATED_PASSWORD_SYMBOLS = "!@#$%^&*()-_=+"
 
-# Short on purpose - Share is meant to be reachable from the internet, so a
-# stolen/leaked token (synced localStorage on a shared device, a browser
-# history snoop) should go stale quickly rather than granting access for a
-# month. The token itself still lives in localStorage (persists across a
-# tab close/reopen within this window) - only its validity window is short.
-SESSION_LIFETIME_HOURS = 2
+# A week - long enough that a returning visitor doesn't have to re-clear
+# the captcha/password every couple hours, short enough that a stolen/leaked
+# token (synced localStorage on a shared device, a browser history snoop)
+# doesn't grant access indefinitely. The token itself still lives in
+# localStorage (persists across a tab close/reopen within this window) -
+# logging out (or the admin disabling Share) revokes it immediately either
+# way, this is just the outer bound for an otherwise-unused token.
+SESSION_LIFETIME_DAYS = 7
 
 # After this many consecutive wrong passwords, login is refused outright for
 # LOCKOUT_SECONDS - a fresh captcha is already required per attempt, this is
@@ -208,13 +214,22 @@ def verify_password(password: str) -> bool:
     return secrets.compare_digest(_hash_password(password, salt), cfg["password_hash"])
 
 
-def set_enabled(enabled: bool) -> None:
+def set_enabled(enabled: bool, duration_days: Optional[int] = MAX_SHARE_DURATION_DAYS) -> None:
+    """duration_days is only meaningful when enabling: how long until Share
+    auto-disables itself (see check_share_expired) - None means it never
+    auto-expires. Ignored when disabling, which always clears the expiry."""
     if enabled and not load_config()["password_hash"]:
         raise ValueError("Set a password before enabling login.")
+    if enabled and duration_days is not None and duration_days <= 0:
+        raise ValueError("duration_days must be positive, or omitted/null for no expiry.")
+
     cfg = {**load_config(), "enabled": enabled}
-    cfg["share_expires_at"] = (
-        (_now() + timedelta(days=MAX_SHARE_DURATION_DAYS)).isoformat() if enabled else None
-    )
+    if enabled:
+        cfg["share_expires_at"] = (
+            (_now() + timedelta(days=duration_days)).isoformat() if duration_days is not None else None
+        )
+    else:
+        cfg["share_expires_at"] = None
     _save_config(cfg)
 
 
@@ -262,7 +277,7 @@ def _prune_expired(sessions: dict[str, str]) -> dict[str, str]:
 def create_session() -> str:
     token = secrets.token_urlsafe(32)
     sessions = _prune_expired(_load_sessions())
-    sessions[token] = (_now() + timedelta(hours=SESSION_LIFETIME_HOURS)).isoformat()
+    sessions[token] = (_now() + timedelta(days=SESSION_LIFETIME_DAYS)).isoformat()
     _save_sessions(sessions)
     return token
 

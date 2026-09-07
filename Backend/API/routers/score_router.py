@@ -14,6 +14,8 @@ from ..schemas import (
     ScoreConfigOut,
     ScoreConfirmIn,
     ScoreOut,
+    ScoreRegionTestIn,
+    ScoreRegionTestOut,
     ScoreResultOut,
 )
 
@@ -64,6 +66,28 @@ async def get_frame(job_id: str, t: Optional[float] = None):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return Response(content=jpeg_bytes, media_type="image/jpeg")
+
+
+# A plain (non-async) def, unlike every other route here - FastAPI runs a
+# sync route in its worker thread pool rather than the main event loop, and
+# OCR inference (easyocr, first call also lazily loads the model) is slow
+# and CPU/GPU-bound enough that running it inline in an async route would
+# stall every other request on this server for the duration.
+@router.post("/test-region", response_model=ScoreRegionTestOut)
+def test_region(job_id: str, body: ScoreRegionTestIn):
+    _require_job(job_id)
+    video_path = config.find_input_video(job_id)
+    if video_path is None:
+        raise HTTPException(status_code=404, detail="No uploaded video found for this job")
+
+    from .. import score_cv  # lazy - pulls in easyocr/torch, not needed unless OCR is actually used
+
+    try:
+        result = score_cv.test_region(video_path, body.t, body.region.model_dump(), body.min_confidence)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return ScoreRegionTestOut(**result)
 
 
 @router.put("/config", response_model=ScoreConfigOut)

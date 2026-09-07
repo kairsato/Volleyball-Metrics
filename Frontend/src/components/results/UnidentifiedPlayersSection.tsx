@@ -10,6 +10,7 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import IconButton from "@mui/material/IconButton";
+import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
@@ -23,8 +24,8 @@ import UndoIcon from "@mui/icons-material/Undo";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import { api } from "../../lib/api";
 import type { Job, Player } from "../../lib/types";
-import { LoadingSpinner } from "../LoadingSpinner";
 import { LockOverlay } from "../LockOverlay";
+import { CardTilesSkeleton } from "../Skeletons";
 import { RedoButton } from "./RedoButton";
 import { formatTimestamp } from "./types";
 
@@ -34,11 +35,19 @@ const PLAYER_TILE_WIDTH = 150;
 const PLAYER_TILE_HEIGHT = 280;
 const VISIBLE_THUMB_COUNT = 3;
 
-function PlayerThumbnail({ player }: { player: Player }) {
-  return player.thumbnail_base64 ? (
+// `showIdentificationBox` opts into player.identification_thumbnail_base64
+// (a copy of the thumbnail with a white highlight box around the subject) -
+// only set server-side when another player's box actually crowds into the
+// crop. Pass it only for tiles that are still being decided (the
+// Unidentified group, and its selections in ResolvePanel above); the
+// resolved Identified/Ignored tiles below, and every other page that shows
+// a player's thumbnail (Players/Teams/Stats), always get the plain photo.
+function PlayerThumbnail({ player, showIdentificationBox = false }: { player: Player; showIdentificationBox?: boolean }) {
+  const src = (showIdentificationBox && player.identification_thumbnail_base64) || player.thumbnail_base64;
+  return src ? (
     <Box
       component="img"
-      src={`data:image/jpeg;base64,${player.thumbnail_base64}`}
+      src={`data:image/jpeg;base64,${src}`}
       alt={`Player ${player.stable_id}`}
       sx={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
     />
@@ -76,7 +85,7 @@ function UnidentifiedPlayerTile({
         }}
       >
         <Box sx={{ position: "relative", width: "100%", height: PLAYER_TILE_HEIGHT, bgcolor: "action.hover" }}>
-          <PlayerThumbnail player={player} />
+          <PlayerThumbnail player={player} showIdentificationBox />
           {selected && (
             <Box
               sx={{
@@ -208,7 +217,7 @@ function ResolvePanel({
             {visiblePlayers.map((p) => (
               <Tooltip key={p.stable_id} title={`Player #${p.stable_id}`}>
                 <Box sx={{ width: 40, height: 40, borderRadius: 1, overflow: "hidden", bgcolor: "action.hover", flexShrink: 0 }}>
-                  <PlayerThumbnail player={p} />
+                  <PlayerThumbnail player={p} showIdentificationBox />
                 </Box>
               </Tooltip>
             ))}
@@ -338,7 +347,27 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
       .catch(() => undefined);
   }, []);
 
-  if (players === null) return <LoadingSpinner minHeight={160} />;
+  if (players === null) {
+    return (
+      <Stack direction={{ xs: "column", md: "row" }} spacing={3}>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Skeleton variant="rounded" height={72} sx={{ mb: 2 }} />
+          <Stack spacing={3}>
+            {["Unidentified players", "Identified players", "Ignored players"].map((label) => (
+              <Box key={label}>
+                <Skeleton variant="text" width={160} sx={{ mb: 1 }} />
+                <CardTilesSkeleton width={PLAYER_TILE_WIDTH} height={PLAYER_TILE_HEIGHT} count={4} />
+              </Box>
+            ))}
+          </Stack>
+        </Box>
+        <Stack spacing={1.5} sx={{ width: 260, flexShrink: 0 }}>
+          <Skeleton variant="rounded" height={36} />
+          <Skeleton variant="rounded" height={36} />
+        </Stack>
+      </Stack>
+    );
+  }
 
   if (players.length === 0) {
     return <Typography color="text.secondary">No players were detected in this video.</Typography>;

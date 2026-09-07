@@ -17,7 +17,7 @@ for directory in (BACKEND_DIR, ANALYSIS_DIR):
     if str(directory) not in sys.path:
         sys.path.insert(0, str(directory))
 
-from CourtDefinition.BallDetection.ballDetection import detectBall, reselect_ball  # noqa: E402
+from BallDetection.ballDetection import detectBall, reselect_ball  # noqa: E402
 from PlayerDetection.tracker_offline import trackplayers_offline  # noqa: E402
 from GameStatusDetection.gameStatusDetection import detectGameStatus  # noqa: E402
 from ActionDetection.actionDetection import detectActions  # noqa: E402

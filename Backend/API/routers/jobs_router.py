@@ -1,10 +1,11 @@
 import json
 import shutil
+from datetime import date
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from .. import calibration, config, pipeline, players, score
+from .. import calibration, config, pipeline, players, score, video_metadata, warmup
 from ..jobs import (
     STATUS_AWAITING_PLAYER_REVIEW,
     STATUS_CANCELLED,
@@ -14,9 +15,10 @@ from ..jobs import (
     STATUS_PROCESSING,
     STATUS_UPLOADED,
     Job,
+    job_videos,
     store,
 )
-from ..schemas import JobOut
+from ..schemas import JobOut, VideoDateIn
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -29,19 +31,37 @@ def _get_job_or_404(job_id: str):
 
 
 def _ensure_duration(job: Job) -> Job:
-    """Backfills duration_s for a job uploaded before that field existed (or
-    if reading it failed at upload time) - lazily, on whichever request
-    happens to touch this job next, rather than needing a one-off migration
-    script. A job that already has a duration never re-opens its video."""
-    if job.duration_s is not None:
+    """Backfills duration_s for any segment that doesn't have one yet (a job
+    uploaded before this field existed, before multi-video support existed,
+    or where reading it failed at upload time) - lazily, on whichever
+    request happens to touch this job next, rather than needing a one-off
+    migration script. A job whose every segment already has a duration
+    never re-opens any video. Only ever writes job.videos back for a job
+    that already has a real one (see job_videos()) - a legacy single-video
+    job just gets its top-level duration_s backfilled exactly as before,
+    with no videos list added to its job.json."""
+    segments = job_videos(job)
+    updated = []
+    changed = False
+    for segment in segments:
+        if segment.get("duration_s") is not None:
+            updated.append(segment)
+            continue
+        video_path, _ = config.resolve_video_and_output(job.id, segment)
+        duration_s = calibration.video_duration_s(video_path) if video_path else None
+        if duration_s is None:
+            updated.append(segment)
+            continue
+        updated.append({**segment, "duration_s": round(duration_s, 1)})
+        changed = True
+
+    if not changed:
         return job
-    video_path = config.find_input_video(job.id)
-    if video_path is None:
-        return job
-    duration_s = calibration.video_duration_s(video_path)
-    if duration_s is None:
-        return job
-    return store.update(job.id, duration_s=round(duration_s, 1))
+
+    changes = {"duration_s": updated[0]["duration_s"]}
+    if job.videos:
+        changes["videos"] = updated
+    return store.update(job.id, **changes)
 
 
 def _needs_player_id(output_path: Path) -> bool:
@@ -68,6 +88,9 @@ def _job_out(job: Job) -> JobOut:
     needs_player_id = False
     needs_scoring_review = False
     winner_team_name = None
+    warmup_confirmed = False
+    warmup_start_s = None
+    warmup_end_s = None
     if job.status == STATUS_COMPLETE:
         output_path = config.output_dir(job.id)
         needs_player_id = _needs_player_id(output_path)
@@ -75,30 +98,87 @@ def _job_out(job: Job) -> JobOut:
         needs_scoring_review = summary["needs_review"]
         winner_team_name = summary["winner_team_name"]
 
+        warmup_cfg = warmup.load_config(output_path)
+        warmup_confirmed = warmup.is_active(warmup_cfg)
+        if warmup_confirmed:
+            warmup_start_s, warmup_end_s = warmup.effective_range(warmup_cfg, job.duration_s)
+
     return JobOut(
         **job.as_dict(),
         needs_player_id=needs_player_id,
         needs_scoring_review=needs_scoring_review,
         winner_team_name=winner_team_name,
+        warmup_confirmed=warmup_confirmed,
+        warmup_start_s=warmup_start_s,
+        warmup_end_s=warmup_end_s,
         queue_position=pipeline.queue_position(job.id),
     )
 
 
 @router.post("", response_model=JobOut)
-async def upload_video(file: UploadFile):
-    suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in config.ALLOWED_VIDEO_EXTENSIONS:
-        allowed = ", ".join(sorted(config.ALLOWED_VIDEO_EXTENSIONS))
-        raise HTTPException(status_code=400, detail=f"Unsupported file type. Allowed: {allowed}")
+async def upload_video(files: list[UploadFile] = File(...)):
+    """One atomic request creates the whole job with every segment it will
+    ever have - there's no separate "add another video to this job later"
+    flow (see the multi-video plan's scope decision). files[0] becomes
+    segment 0 (the job's own original_filename/duration_s/date_played, and
+    the one that lives at the legacy flat data/<job_id>/input<ext> path -
+    see config.resolve_video_and_output); files[1:] become segments 1..N
+    under data/<job_id>/videos/<segment_id>/."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
 
-    job = store.create(original_filename=file.filename or "video")
+    video_specs = []
+    for file in files:
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in config.ALLOWED_VIDEO_EXTENSIONS:
+            allowed = ", ".join(sorted(config.ALLOWED_VIDEO_EXTENSIONS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type for {file.filename!r}. Allowed: {allowed}",
+            )
+        video_specs.append({"original_filename": file.filename or "video", "suffix": suffix})
 
-    destination = config.input_video_path(job.id, suffix)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Segment ids/paths only exist once the Job record itself does, so
+    # files are streamed to disk in a second pass, then each one's
+    # date_played is extracted from the now-on-disk file and patched back -
+    # same lazy-backfill shape as _ensure_duration above, just done
+    # eagerly here since upload is the one moment a sensible default is
+    # actually worth computing.
+    job = store.create(video_specs)
+    segments = job_videos(job)
 
-    with destination.open("wb") as out:
-        shutil.copyfileobj(file.file, out)
+    updated_segments = []
+    for file, segment in zip(files, segments):
+        video_path = config.segment_destination(job.id, segment)
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        with video_path.open("wb") as out:
+            shutil.copyfileobj(file.file, out)
 
+        played = video_metadata.extract_creation_date(video_path) or date.today()
+        updated_segments.append({**segment, "date_played": played.isoformat()})
+
+    job = store.update(job.id, videos=updated_segments, date_played=updated_segments[0]["date_played"])
+
+    return _job_out(job)
+
+
+@router.put("/{job_id}/videos/{segment_id}", response_model=JobOut)
+async def set_video_date(job_id: str, segment_id: str, body: VideoDateIn):
+    """Corrects one segment's date_played after upload (auto-detected from
+    file metadata or defaulted to the upload date - see upload_video). The
+    only user-editable field on a video segment today."""
+    job = _get_job_or_404(job_id)
+    segments = job_videos(job)
+    if not any(s["id"] == segment_id for s in segments):
+        raise HTTPException(status_code=404, detail="Video segment not found")
+
+    updated_segments = [
+        {**s, "date_played": body.date_played} if s["id"] == segment_id else s for s in segments
+    ]
+    changes: dict = {"videos": updated_segments}
+    if segment_id == updated_segments[0]["id"]:
+        changes["date_played"] = body.date_played
+    job = store.update(job_id, **changes)
     return _job_out(job)
 
 
