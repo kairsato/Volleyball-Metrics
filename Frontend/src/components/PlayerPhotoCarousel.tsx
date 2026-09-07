@@ -11,17 +11,18 @@ const PHOTO_TRANSITION_DURATION_S = 1.5;
 // Shared by the Players page's identified-player cards and the Teams
 // page's lineup strips - anywhere a player has more than one thumbnail
 // available (different videos, different angles), this slowly cross-fades
-// between them instead of being stuck on whichever one was found first.
+// between them while hovered, instead of always cycling on its own.
 export function PlayerPhotoCarousel({ thumbnails, alt }: { thumbnails: string[]; alt: string }) {
   const [index, setIndex] = useState(0);
+  const [isHovering, setIsHovering] = useState(false);
 
   useEffect(() => {
-    if (thumbnails.length <= 1) return;
+    if (!isHovering || thumbnails.length <= 1) return;
     const timer = setInterval(() => {
       setIndex((i) => (i + 1) % thumbnails.length);
     }, PHOTO_TRANSITION_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [thumbnails.length]);
+  }, [isHovering, thumbnails.length]);
 
   if (thumbnails.length === 0) {
     return (
@@ -32,7 +33,14 @@ export function PlayerPhotoCarousel({ thumbnails, alt }: { thumbnails: string[];
   }
 
   return (
-    <Box sx={{ position: "relative", width: "100%", height: "100%" }}>
+    <Box
+      sx={{ position: "relative", width: "100%", height: "100%" }}
+      onMouseEnter={() => setIsHovering(true)}
+      onMouseLeave={() => {
+        setIsHovering(false);
+        setIndex(0);
+      }}
+    >
       {thumbnails.map((thumbnail, i) => (
         <Box
           key={i}
