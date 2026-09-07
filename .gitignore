@@ -25,6 +25,22 @@ Backend/API/data/
 *.npz
 Backend/Analysis/GameStatusDetection/Models/
 
+# Downloaded/derived third-party training datasets (raw Roboflow exports,
+# extracted crops, merged train/val splits, cached training frames) -
+# regenerable via MachineLearning/datasetGather.py (or, for
+# dataset_gameStatusDetection, GameStatusDetection/trainGameStatus.py's own
+# caching), and too large (tens of thousands of files) for git history.
+# (the trailing /* + negation keeps each folder's own README.md - which
+# names the model it feeds - tracked even though its data isn't)
+Backend/Analysis/MachineLearning/dataset_actionDetection/*
+!Backend/Analysis/MachineLearning/dataset_actionDetection/README.md
+Backend/Analysis/MachineLearning/dataset_ballDetection/*
+!Backend/Analysis/MachineLearning/dataset_ballDetection/README.md
+Backend/Analysis/MachineLearning/dataset_courtDefinition/*
+!Backend/Analysis/MachineLearning/dataset_courtDefinition/README.md
+Backend/Analysis/MachineLearning/dataset_gameStatusDetection/*
+!Backend/Analysis/MachineLearning/dataset_gameStatusDetection/README.md
+
 # Ultralytics' default run/output directory (predictions, training runs) -
 # regenerable, not source.
 runs/
