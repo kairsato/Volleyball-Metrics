@@ -56,7 +56,7 @@ Per-video setup (the **Setup** tab):
 | :---: | :---: | :---: |
 | ![Scoring setup demo](docs/assets/frontend-scoring.gif) | ![Court calibration demo](docs/assets/frontend-court-calibration.gif) | ![Player identification demo](docs/assets/frontend-player-id.gif) |
 
-<details>
+
 
 ## Backend
 
