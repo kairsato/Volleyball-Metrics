@@ -15,12 +15,10 @@ import Slider from "@mui/material/Slider";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
-import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import type { HeuristicParam, HeuristicsRegistry, HeuristicStage, HeuristicsState, HeuristicValues } from "../lib/types";
-import { ToolPageSkeleton } from "../components/Skeletons";
+import { ToolPageSkeleton } from "./Skeletons";
 
 function cloneValues(values: HeuristicValues): HeuristicValues {
   return JSON.parse(JSON.stringify(values));
@@ -163,7 +161,7 @@ function StagePanel({ stage, values, disabled, onChange }: StagePanelProps) {
   const groups = useMemo(() => groupParams(stage.params), [stage]);
 
   return (
-    <Card variant="outlined" sx={{ p: 3 }}>
+    <Card variant="outlined" sx={{ p: 3, maxWidth: 760 }}>
       <Chip
         size="small"
         label={stage.phase === "preprocessing" ? "Preprocessing" : "Post-processing"}
@@ -206,9 +204,10 @@ function StagePanel({ stage, values, disabled, onChange }: StagePanelProps) {
   );
 }
 
-export function ConfigurationPage() {
-  const navigate = useNavigate();
-
+// Settings page's Configuration tab - see SettingsPage.tsx. Previously a
+// standalone page off the gear menu directly (old /configuration links
+// redirect to /settings?tab=configuration now, see App.tsx).
+export function ConfigurationPanel() {
   const [registry, setRegistry] = useState<HeuristicsRegistry | null>(null);
   const [heuristicsState, setHeuristicsState] = useState<HeuristicsState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -224,13 +223,6 @@ export function ConfigurationPage() {
   const [newProfileOpen, setNewProfileOpen] = useState(false);
   const [newProfileName, setNewProfileName] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-
-  useEffect(() => {
-    document.title = "Configuration";
-    return () => {
-      document.title = "Volleyball Metrics";
-    };
-  }, []);
 
   function loadState(preferredProfileId?: string) {
     return api
@@ -360,15 +352,8 @@ export function ConfigurationPage() {
   const selectedValues = draftValues[selectedStage.key] ?? {};
 
   return (
-    <Box sx={{ maxWidth: 1100 }}>
-      <Button startIcon={<ArrowBackIcon />} onClick={() => navigate("/home")} sx={{ alignSelf: "flex-start", mb: 2 }}>
-        Back to home
-      </Button>
-
-      <Typography variant="h4" sx={{ fontWeight: 700, mb: 1 }}>
-        Configuration
-      </Typography>
-      <Typography color="text.secondary" sx={{ mb: 3 }}>
+    <Box>
+      <Typography color="text.secondary" sx={{ mb: 3, maxWidth: 900 }}>
         How a video moves through this pipeline, stage by stage, and the general heuristics each stage uses to make
         its decisions. Changes apply to every video processed while a profile is active - past results aren't
         recomputed automatically (recalibrate/redo a job to apply new tuning to it).

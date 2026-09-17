@@ -2,45 +2,30 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AppBar from "@mui/material/AppBar";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
 import CssBaseline from "@mui/material/CssBaseline";
 import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import Drawer from "@mui/material/Drawer";
-import FormControlLabel from "@mui/material/FormControlLabel";
 import IconButton from "@mui/material/IconButton";
-import Link from "@mui/material/Link";
 import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
-import Paper from "@mui/material/Paper";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
 import Tab from "@mui/material/Tab";
 import Tabs from "@mui/material/Tabs";
-import TextField from "@mui/material/TextField";
 import Toolbar from "@mui/material/Toolbar";
 import Typography from "@mui/material/Typography";
 import { ThemeProvider } from "@mui/material/styles";
 import CheckIcon from "@mui/icons-material/Check";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import LogoutIcon from "@mui/icons-material/Logout";
 import MenuIcon from "@mui/icons-material/Menu";
 import SettingsIcon from "@mui/icons-material/Settings";
-import ShareIcon from "@mui/icons-material/Share";
 import TuneIcon from "@mui/icons-material/Tune";
-import ShuffleIcon from "@mui/icons-material/Shuffle";
-import VisibilityIcon from "@mui/icons-material/Visibility";
-import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
-import InputAdornment from "@mui/material/InputAdornment";
 import {
   BrowserRouter,
   Link as RouterLink,
@@ -52,13 +37,14 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { AboutPage } from "./pages/AboutPage";
-import { ConfigurationPage } from "./pages/ConfigurationPage";
 import { CourtCalibrationPage } from "./pages/CourtCalibrationPage";
+import { DebugReviewPage } from "./pages/DebugReviewPage";
 import { HomePage } from "./pages/HomePage";
 import { PlayerIdentificationPage } from "./pages/PlayerIdentificationPage";
 import { PlayersPage } from "./pages/PlayersPage";
 import { PlayerStatsPage } from "./pages/PlayerStatsPage";
 import { ScoringDeterminationPage } from "./pages/ScoringDeterminationPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { TeamsPage } from "./pages/TeamsPage";
 import { TeamStatsPage } from "./pages/TeamStatsPage";
 import { GamePage } from "./pages/GamePage";
@@ -69,18 +55,19 @@ import { LoginGate } from "./components/LoginGate";
 import { UploadPanel } from "./components/UploadPanel";
 import { api } from "./lib/api";
 import { ThemeModeProvider, useThemeMode } from "./lib/themeMode";
-import type { AuthStatus, Job, ShareStatus } from "./lib/types";
+import type { Job } from "./lib/types";
 import { createAppTheme } from "./theme";
 
 function SettingsMenu() {
   const { mode, setMode } = useThemeMode();
   const navigate = useNavigate();
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
-  const [shareDialogOpen, setShareDialogOpen] = useState(false);
-  // Defaults to true (shown) while this is still loading - briefly showing
-  // the item is harmless (every /api/share/* call it could make is already
-  // blocked server-side for a remote visitor regardless, see
-  // main.py's LAN_ONLY_PATH_PREFIXES), a flash of hidden-then-shown isn't.
+  // Gates the Settings item - it opens SettingsPage's Share/Configuration/
+  // Debug tabs, all of which are LAN-only server-side too (see main.py's
+  // LAN_ONLY_PATH_PREFIXES). Defaults to true (shown) while this is still
+  // loading - briefly showing the item is harmless (every call those tabs
+  // could make is already blocked server-side for a remote visitor
+  // regardless), a flash of hidden-then-shown isn't.
   const [isLan, setIsLan] = useState(true);
 
   useEffect(() => {
@@ -119,27 +106,14 @@ function SettingsMenu() {
         {isLan && (
           <MenuItem
             onClick={() => {
-              setShareDialogOpen(true);
               setAnchorEl(null);
-            }}
-          >
-            <ListItemIcon>
-              <ShareIcon fontSize="small" />
-            </ListItemIcon>
-            Share
-          </MenuItem>
-        )}
-        {isLan && (
-          <MenuItem
-            onClick={() => {
-              setAnchorEl(null);
-              navigate("/configuration");
+              navigate("/settings");
             }}
           >
             <ListItemIcon>
               <TuneIcon fontSize="small" />
             </ListItemIcon>
-            Configuration
+            Settings
           </MenuItem>
         )}
         <MenuItem
@@ -154,7 +128,6 @@ function SettingsMenu() {
           Log out
         </MenuItem>
       </Menu>
-      <ShareSettingsDialog open={shareDialogOpen} onClose={() => setShareDialogOpen(false)} />
     </>
   );
 }
@@ -322,7 +295,8 @@ function AppContent() {
           <Route path="/teams" element={<TeamsPage jobs={jobs} />} />
           <Route path="/team" element={<TeamStatsPage />} />
           <Route path="/about" element={<AboutPage />} />
-          <Route path="/configuration" element={<ConfigurationPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/debug/review" element={<DebugReviewPage />} />
           <Route path="/game" element={<GamePage onJobUpdated={handleJobUpdated} />} />
           <Route path="/game/setup" element={<LegacySetupRedirect />} />
           <Route
@@ -343,6 +317,8 @@ function AppContent() {
           <Route path="/results" element={<Navigate to={`/game${location.search}`} replace />} />
           <Route path="/stats" element={<Navigate to="/players" replace />} />
           <Route path="/credits" element={<Navigate to="/about" replace />} />
+          {/* Configuration used to be its own page off the gear menu - it's the Configuration tab of Settings now (see SettingsPage.tsx), alongside Share and Debug. */}
+          <Route path="/configuration" element={<Navigate to="/settings?tab=configuration" replace />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </Box>

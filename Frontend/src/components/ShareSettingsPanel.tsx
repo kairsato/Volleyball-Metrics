@@ -151,7 +151,7 @@ export function ShareSettingsPanel() {
   }
 
   return (
-    <Box sx={{ maxWidth: 720 }}>
+    <Box sx={{ maxWidth: 900 }}>
       <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 2 }}>
         <Typography variant="h6">Share</Typography>
         <FormControlLabel

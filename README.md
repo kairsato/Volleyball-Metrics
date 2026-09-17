@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/logo.jpg" width="200" alt="Volleyball Metrics logo" />
+<img src="docs/logo.png" width="600" alt="Volleyball Metrics logo" />
 
 # Volleyball Metrics
 
@@ -19,31 +19,38 @@
 
 ## About
 
-I got fed up with volleyball analytics platforms that charge clubs and individual players absurd subscription fees for something a laptop and a few open-source models can already do. Coaches and players who just want to know their hitting efficiency or where their serve receive breaks down shouldn't have to pay per-video or per-seat for it. So I built this: a self-hosted pipeline that takes a normal match recording — a phone on a tripod, a wall-mounted camera, whatever — and turns it into the same kind of stats the paid tools sell, for free, running on your own machine.
+Justed wanted free AI video analysis for volleyball with a user friendly interface. I used paid solutions but locked down higher tiers of analysis behind paywall. Reviewed existing opensource projects but thought they lack accuracy and easy of use of the commercial products.
 
 **NOTE:** This project had the use of generative AI.
 
+## Objectives
+
+- Easy of Use
+- Provide useful insights on game/team and individual bases
+- Leverage Both Heurestics and Trainned models to increase accuracy
+- Limit the amount of input needed from a user.
+- Optimise general pipeline to make processing efficient enough to run a low tier server (Make easy to host)
+
+## Features
+- Easy to use, clean user interface
+- Analytics on team/games/individual bases
+- Footage with annotations
+- Ability to easily host this on machine old machine 
+
+
 ### Inspiration
 
-This project builds directly on ideas and open datasets from:
+In attempt to make something I considered useful i was inpsired by other opensource projects who goals were similar.
 
 - **[shukkkur/VolleyVision](https://github.com/shukkkur/VolleyVision)** — the original inspiration for tackling volleyball with a staged detection/tracking pipeline (ball → players/actions → court), and the source of several of the ball and action detection datasets below.
 - **[masouduut94/volleyball_analytics](https://github.com/masouduut94/volleyball_analytics)** — inspiration for treating rally/game-status segmentation as its own video-classification stage, and the source of the fine-tuned VideoMAE checkpoint this project's rally detector is built on.
 
-## What it gives you
+## Architecture
 
-- **Player positioning & movement** — see where each player tends to stand, cover, and move to over the course of a match, not just where they ended up.
-- **Set locations & serve/receive patterns** — where sets tend to go and how cleanly serve/receive is handled, rally after rally.
-- **Standout performances** — surfaces what individual players did well across the match, rolling up into a general MVP read instead of a gut feeling.
-- **Annotated video trajectories** — tracking overlays on the rendered video make it easy to follow one specific player, or the ball itself, through an entire rally.
-- **Match & game statistics** — win/loss records, hitting efficiency, unforced errors, and other game stats generated automatically instead of requiring a manual stat-taker.
-- **Court-relative metrics** — ball speed, jump height, and shot placement, computed in real court coordinates from a one-time court calibration rather than raw pixels.
-- **Team-level rollups** — win rate by action type and hit counts aggregated across every video a team has played, so trends show up over a season, not just one match.
-- **All of it for free, on your own hardware** — a decent GPU and an evening of setup instead of a per-seat subscription, built in the open on top of the datasets and prior work that made it possible.
+- **Backend**: Python, FastAPI, PyTorch, Ultralytics YOLO, Hugging Face Transformers (VideoMAE), OpenCV
+- **Frontend**: React, TypeScript, Vite, MUI (Material UI), React Router
 
 ## Frontend
-
-The frontend is a React + TypeScript SPA.
 
 ### Screenshots & demos
 
@@ -58,15 +65,6 @@ Per-video setup (the **Setup** tab):
 | ![Scoring setup demo](docs/assets/frontend-scoring.gif) | ![Court calibration demo](docs/assets/frontend-court-calibration.gif) | ![Player identification demo](docs/assets/frontend-player-id.gif) |
 
 <details>
-<summary><strong>Main areas</strong></summary>
-
-- **Games** — upload a match, watch pipeline stage progress live, and jump into any past video's results.
-- **Teams / Players** — roster management, team win/loss and win-rate-by-action radars, per-player stats across every video they've appeared in.
-- **Scoring** — set scoring mode (manual / automatic / scoreboard OCR), pick the score-region on screen for OCR, and correct any rally-to-game grouping afterward.
-- **Court calibration** — click the four court corners and (optionally) the net-top points once per video; used for every downstream court-relative and height-based calculation.
-- **Player identification** — review detected players, name them from the roster, merge duplicates, or ignore false positives (refs, coaches, spectators).
-
-</details>
 
 ## Backend
 
@@ -85,22 +83,10 @@ Backend/
     MachineLearning/      Dataset gathering/merging + training entry points for every model above
 ```
 
-<details>
-<summary><strong>Stage-by-stage details</strong></summary>
-
-- **API** (`Backend/API/`) — auth, video upload, job/stage orchestration (`stage_runner.py`, `pipeline.py`), roster/team/player CRUD, scoring (manual/automatic/OCR via `score_cv.py`), sharing, and a router per resource under `routers/`.
-- **Player detection & tracking** (`PlayerDetection/tracker.py`) — Ultralytics YOLO for detection, fed into a custom 5-tracker ensemble with a ResNet18-based appearance encoder for re-identifying players who briefly leave the frame or get occluded. Heuristics on top: track-merge scoring by IoU + appearance-embedding distance + motion continuity, and confidence gating to suppress crowd/spectator false positives.
-- **Court definition** (`CourtDefinition/court.py`) — a keypoint model locates the court corners/net points; a heuristic homography solve maps pixel space to real court coordinates, and a single-view camera pose (from the two net-top points) drives height estimation for the ball and jumps.
-- **Ball detection** (`BallDetection/ballDetection.py`) — a fine-tuned detector plus a trajectory smoother/interpolator (heuristic Kalman-style gap filling) to bridge frames where the ball is occluded or motion-blurred, and a real-world speed estimate from the court homography.
-- **Game status detection** (`GameStatusDetection/gameStatusDetection.py`) — a fine-tuned VideoMAE video classifier labels each window as play / no-play / serve, which is stitched (with heuristic minimum-duration and boundary-snapping rules) into rally start/end boundaries.
-- **Action detection** (`ActionDetection/actionDetection.py`) — a classifier attributes each touch to a type and, combined with player-track proximity heuristics, to a specific player.
-- **Post-processing** (`PostProcessing/`) — consolidates all per-frame detections into rally/game/player stats (`consolidate.py`), renders the annotated video (`renderVideo.py`), transcodes for playback (`transcode.py`), and generates a standalone HTML dashboard (`generate_dashboard.py`).
-
-</details>
 
 ## Detection & Analysis
 
-Every fine-tuned model below is a **YOLOv8-format** dataset merged from one or more open [Roboflow Universe](https://universe.roboflow.com) datasets via `Backend/Analysis/MachineLearning/datasetGather.py`, then trained by `mainTrainingModels.py`. Full attribution is also shown in-app under **About**.
+Every fine-tuned model below is a **YOLO-format** dataset merged from one or more open [Roboflow Universe](https://universe.roboflow.com) datasets via `Backend/Analysis/MachineLearning/datasetGather.py`, then trained by `mainTrainingModels.py`. Full attribution is also shown in-app under **About**.
 
 <details>
 <summary><strong>Ball detection</strong></summary>
@@ -211,10 +197,7 @@ Every fine-tuned model below is a **YOLOv8-format** dataset merged from one or m
 
 </details>
 
-## Tech stack
 
-- **Backend**: Python, FastAPI, PyTorch, Ultralytics YOLO, Hugging Face Transformers (VideoMAE), OpenCV
-- **Frontend**: React, TypeScript, Vite, MUI (Material UI), React Router
 
 ## Getting started
 
