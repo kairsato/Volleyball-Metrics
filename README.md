@@ -1,21 +1,20 @@
 <div align="center">
 
-<img src="docs/logo.png" width="600" alt="Volleyball Metrics logo" />
+<img src="docs/logo.png" width="500" alt="Volleyball Metrics logo" />
 
 # Volleyball Metrics
 
 </div>
 
-<!--
-  Demo GIFs go here. Drop capture files into docs/assets/ using the names
-  below and these will render — nothing else in the README needs to change.
--->
-
 ### Demo
 
-| Ball detection | Player detection | Court detection | Game status detection |
-| :---: | :---: | :---: | :---: |
-| ![Ball detection demo](docs/assets/demo-ball-detection.gif) | ![Player detection demo](docs/assets/demo-player-detection.gif) | ![Court detection demo](docs/assets/demo-court-detection.gif) | ![Game status detection demo](docs/assets/demo-game-status-detection.gif) |
+| Ball detection | Player detection |
+| :---: | :---: |
+| ![Ball detection demo](docs/assets/demo-ball-detection.gif) | ![Player detection demo](docs/assets/demo-player-detection.gif) |
+
+| Court detection | Game status detection |
+| :---: | :---: |
+| ![Court detection demo](docs/assets/demo-court-detection.gif) | ![Game status detection demo](docs/assets/demo-game-status-detection.gif) |
 
 ## About
 
@@ -31,16 +30,9 @@ Justed wanted free AI video analysis for volleyball with a user friendly interfa
 - Limit the amount of input needed from a user.
 - Optimise general pipeline to make processing efficient enough to run a low tier server (Make easy to host)
 
-## Features
-- Easy to use, clean user interface
-- Analytics on team/games/individual bases
-- Footage with annotations
-- Ability to easily host this on machine old machine 
+## Inspiration
 
-
-### Inspiration
-
-In attempt to make something I considered useful i was inpsired by other opensource projects who goals were similar.
+I was inspired by various high rated open source projects that had decent volleyball pipelines and general analysis.
 
 - **[shukkkur/VolleyVision](https://github.com/shukkkur/VolleyVision)** — the original inspiration for tackling volleyball with a staged detection/tracking pipeline (ball → players/actions → court), and the source of several of the ball and action detection datasets below.
 - **[masouduut94/volleyball_analytics](https://github.com/masouduut94/volleyball_analytics)** — inspiration for treating rally/game-status segmentation as its own video-classification stage, and the source of the fine-tuned VideoMAE checkpoint this project's rally detector is built on.
@@ -54,7 +46,7 @@ In attempt to make something I considered useful i was inpsired by other opensou
 
 ### Screenshots & demos
 
-| Games & upload | Teams | Players |
+| Games | Teams | Players |
 | :---: | :---: | :---: |
 | ![Games page demo](docs/assets/frontend-games.gif) | ![Teams page demo](docs/assets/frontend-teams.gif) | ![Players page demo](docs/assets/frontend-players.gif) |
 
