@@ -3,6 +3,7 @@ import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
+import Chip from "@mui/material/Chip";
 import FormControl from "@mui/material/FormControl";
 import InputLabel from "@mui/material/InputLabel";
 import MenuItem from "@mui/material/MenuItem";
@@ -15,7 +16,14 @@ import { api } from "../../lib/api";
 import type { ActionQualityCategory, ActionQualityOut, ResultsOut } from "../../lib/types";
 import { CourtMap } from "./CourtMap";
 import { playerInsight, type ActionCategoryKey } from "./insights";
-import { recomputeCategory } from "./weights";
+import { ScoreRadarChart } from "./ScoreRadarChart";
+import { median, recomputeCategory, redistributeWeights } from "./weights";
+
+const GOOD_COLOR = "#22c55e";
+const BAD_COLOR = "#ef4444";
+// Below this gap, a player's score isn't visually flagged as above/below
+// median - keeps near-identical performers from getting a noisy color.
+const MEDIAN_GAP_THRESHOLD = 0.03;
 
 function formatPercent(value: number | null): string {
   return value !== null ? `${Math.round(value * 100)}%` : "-";
@@ -23,6 +31,31 @@ function formatPercent(value: number | null): string {
 
 function factorLabel(key: string): string {
   return key.replace(/_/g, " ");
+}
+
+function formatDiff(diff: number): string {
+  const sign = diff > 0 ? "+" : "";
+  return `${sign}${Math.round(diff * 100)}%`;
+}
+
+// Green above the category's median score, red below, neutral within
+// MEDIAN_GAP_THRESHOLD of it - the color-coded "how this compares to
+// everyone else" cue requested alongside the median itself.
+function MedianDiff({ value, medianValue }: { value: number | null; medianValue: number | null }) {
+  if (value === null || medianValue === null) return null;
+  const diff = value - medianValue;
+  if (Math.abs(diff) < MEDIAN_GAP_THRESHOLD) {
+    return (
+      <Typography variant="caption" color="text.secondary">
+        at median
+      </Typography>
+    );
+  }
+  return (
+    <Typography variant="caption" sx={{ color: diff > 0 ? GOOD_COLOR : BAD_COLOR, fontWeight: 600 }}>
+      {formatDiff(diff)} vs median
+    </Typography>
+  );
 }
 
 // category-wide by default; restricted to one player's own instances when
@@ -52,7 +85,7 @@ interface QualitySectionProps {
   categoryKey: ActionCategoryKey;
   category: ActionQualityCategory;
   weights: Record<string, number>;
-  onWeightChange: (factorKey: string, value: number) => void;
+  onWeightsChange: (weights: Record<string, number>) => void;
   onResetWeights: () => void;
   playerNames: Record<string, string | undefined>;
   playerFilter: number | null;
@@ -69,7 +102,7 @@ function QualitySection({
   categoryKey,
   category,
   weights,
-  onWeightChange,
+  onWeightsChange,
   onResetWeights,
   playerNames,
   playerFilter,
@@ -98,18 +131,29 @@ function QualitySection({
 
   const shownPlayers = playerFilter === null ? rankedPlayers.slice(0, 6) : rankedPlayers.filter((p) => p.stableId === playerFilter);
 
+  // Median across every player who recorded this action - shown players are
+  // color-coded against this, not just against each other's raw score.
+  const medianScore = median(rankedPlayers.map((p) => p.averageScore).filter((v): v is number => v !== null));
+
   return (
     <Card variant="outlined" sx={{ p: 2.5, mb: 3 }}>
       <Stack direction="row" sx={{ alignItems: "baseline", justifyContent: "space-between", mb: 1.5 }}>
         <Typography variant="subtitle2">{title}</Typography>
-        <Typography variant="h5" sx={{ fontWeight: 700 }}>
-          {formatPercent(displayScore)}
-        </Typography>
+        <Stack sx={{ alignItems: "flex-end" }}>
+          <Typography variant="h5" sx={{ fontWeight: 700, lineHeight: 1.2 }}>
+            {formatPercent(displayScore)}
+          </Typography>
+          {medianScore !== null && (
+            <Typography variant="caption" color="text.secondary">
+              median {formatPercent(medianScore)}
+            </Typography>
+          )}
+        </Stack>
       </Stack>
 
       <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 0.5 }}>
         <Typography variant="caption" color="text.secondary">
-          Weights (drag to see scores update)
+          Weights (drag one - the rest rebalance to keep the total at 100%)
         </Typography>
         <Button size="small" onClick={onResetWeights}>
           Reset
@@ -128,12 +172,15 @@ function QualitySection({
             <Slider
               size="small"
               min={0}
-              max={1}
-              step={0.05}
-              value={weights[key] ?? 0}
-              onChange={(_, value) => onWeightChange(key, value as number)}
+              max={100}
+              step={1}
+              value={Math.round((weights[key] ?? 0) * 100)}
+              onChange={(_, value) => onWeightsChange(redistributeWeights(weights, key, (value as number) / 100))}
               sx={{ flex: 1 }}
             />
+            <Typography variant="caption" sx={{ width: 34, textAlign: "right", flexShrink: 0 }}>
+              {Math.round((weights[key] ?? 0) * 100)}%
+            </Typography>
             <ScoreBar value={averageFactor(category, key, playerFilter)} />
           </Stack>
         ))}
@@ -153,6 +200,7 @@ function QualitySection({
                   <Typography variant="caption" color="text.secondary">
                     {formatPercent(player.averageScore)} · {player.count}
                   </Typography>
+                  <MedianDiff value={player.averageScore} medianValue={medianScore} />
                   {firstInstance && (
                     <Button size="small" onClick={() => onSeek(firstInstance.timestamp_s)}>
                       Jump in
@@ -183,13 +231,16 @@ interface AnalyticsTabProps {
   onSeek: (timeS: number) => void;
 }
 
-const CATEGORY_KEYS: ActionCategoryKey[] = ["serve", "receive", "set", "spike"];
+const CATEGORY_KEYS: ActionCategoryKey[] = ["serve", "receive", "set", "spike", "block"];
 
 export function AnalyticsTab({ results, onSeek }: AnalyticsTabProps) {
   const [quality, setQuality] = useState<ActionQualityOut | null>(null);
   const [qualityLoading, setQualityLoading] = useState(true);
   const [weights, setWeights] = useState<Record<ActionCategoryKey, Record<string, number>> | null>(null);
   const [playerFilter, setPlayerFilter] = useState<number | null>(null);
+  // Which action categories are shown - lets a coach focused on, say, just
+  // serving and blocking hide the rest instead of scrolling past them.
+  const [visibleCategories, setVisibleCategories] = useState<Set<ActionCategoryKey>>(new Set(CATEGORY_KEYS));
 
   useEffect(() => {
     let cancelled = false;
@@ -203,6 +254,7 @@ export function AnalyticsTab({ results, onSeek }: AnalyticsTabProps) {
           receive: { ...res.receive.weights },
           set: { ...res.set.weights },
           spike: { ...res.spike.weights },
+          block: { ...res.block.weights },
         });
       })
       .catch(() => undefined)
@@ -211,6 +263,15 @@ export function AnalyticsTab({ results, onSeek }: AnalyticsTabProps) {
       cancelled = true;
     };
   }, [results.job_id]);
+
+  function toggleCategory(key: ActionCategoryKey) {
+    setVisibleCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   const playerEntries = Object.entries(results.players);
   const playerNames = Object.fromEntries(playerEntries.map(([id, stat]) => [id, stat.name ?? undefined]));
@@ -242,27 +303,50 @@ export function AnalyticsTab({ results, onSeek }: AnalyticsTabProps) {
   }
 
   if (!quality || !weights) {
-    return <Typography color="text.secondary">Action quality data isn't available for this video.</Typography>;
+    return <Alert severity="info">Action quality data isn't available for this video.</Alert>;
   }
+
+  const radarPoints = CATEGORY_KEYS.map((key) => {
+    const category = quality[key];
+    const recomputed = recomputeCategory(category, weights[key]);
+    const value = playerFilter === null ? recomputed.averageScore : (recomputed.players[playerFilter]?.averageScore ?? null);
+    return { key, label: key.charAt(0).toUpperCase() + key.slice(1), value };
+  });
+  const hasAnyRadarData = radarPoints.some((p) => p.value !== null);
 
   return (
     <Box>
-      <FormControl size="small" sx={{ mb: 2, minWidth: 200 }}>
-        <InputLabel id="analytics-player-filter-label">Show</InputLabel>
-        <Select
-          labelId="analytics-player-filter-label"
-          label="Show"
-          value={playerFilter === null ? "everyone" : String(playerFilter)}
-          onChange={(event) => setPlayerFilter(event.target.value === "everyone" ? null : Number(event.target.value))}
-        >
-          <MenuItem value="everyone">Everyone</MenuItem>
-          {playerEntries.map(([id, stat]) => (
-            <MenuItem key={id} value={id}>
-              {stat.name ?? `Player ${id}`}
-            </MenuItem>
+      <Stack direction="row" spacing={2} sx={{ mb: 2, flexWrap: "wrap", alignItems: "center" }}>
+        <FormControl size="small" sx={{ minWidth: 200 }}>
+          <InputLabel id="analytics-player-filter-label">Show</InputLabel>
+          <Select
+            labelId="analytics-player-filter-label"
+            label="Show"
+            value={playerFilter === null ? "everyone" : String(playerFilter)}
+            onChange={(event) => setPlayerFilter(event.target.value === "everyone" ? null : Number(event.target.value))}
+          >
+            <MenuItem value="everyone">Everyone</MenuItem>
+            {playerEntries.map(([id, stat]) => (
+              <MenuItem key={id} value={id}>
+                {stat.name ?? `Player ${id}`}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+
+        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
+          {CATEGORY_KEYS.map((key) => (
+            <Chip
+              key={key}
+              label={key.charAt(0).toUpperCase() + key.slice(1)}
+              size="small"
+              color={visibleCategories.has(key) ? "primary" : "default"}
+              variant={visibleCategories.has(key) ? "filled" : "outlined"}
+              onClick={() => toggleCategory(key)}
+            />
           ))}
-        </Select>
-      </FormControl>
+        </Stack>
+      </Stack>
 
       {(!quality.teams_available || !quality.height_available) && (
         <Alert severity="info" sx={{ mb: 2 }}>
@@ -273,16 +357,28 @@ export function AnalyticsTab({ results, onSeek }: AnalyticsTabProps) {
         </Alert>
       )}
 
-      {CATEGORY_KEYS.map((key) => (
+      {hasAnyRadarData && (
+        <Card variant="outlined" sx={{ p: 2.5, mb: 3 }}>
+          <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+            Quality profile
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+            {playerFilter === null
+              ? "Composite score across every action category for the whole video."
+              : `Composite score across every action category for ${playerNames[String(playerFilter)] ?? "this player"}.`}
+          </Typography>
+          <ScoreRadarChart points={radarPoints} />
+        </Card>
+      )}
+
+      {CATEGORY_KEYS.filter((key) => visibleCategories.has(key)).map((key) => (
         <QualitySection
           key={key}
           title={key.charAt(0).toUpperCase() + key.slice(1)}
           categoryKey={key}
           category={quality[key]}
           weights={weights[key]}
-          onWeightChange={(factorKey, value) =>
-            setWeights((prev) => (prev ? { ...prev, [key]: { ...prev[key], [factorKey]: value } } : prev))
-          }
+          onWeightsChange={(newWeights) => setWeights((prev) => (prev ? { ...prev, [key]: newWeights } : prev))}
           onResetWeights={() => setWeights((prev) => (prev ? { ...prev, [key]: { ...quality[key].weights } } : prev))}
           playerNames={playerNames}
           playerFilter={playerFilter}

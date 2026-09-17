@@ -38,13 +38,13 @@ function StatTile({ value, label }: { value: string | number; label: string }) {
   );
 }
 
-// A named team's stats rolled up across every video it's appeared in -
+// A named team's stats rolled up across every game it's appeared in -
 // reached by clicking a team card on the Teams page. Modeled directly on
-// PlayerStatsPage.tsx (stat tiles, action-mix bar, a "by video" list) with
-// two additions: a match/game win-loss record and a radar chart, both only
-// ever populated from videos where Scoring was actually configured with
+// PlayerStatsPage.tsx (stat tiles, action-mix bar, a "by game" list) with
+// two additions: a match/set win-loss record and a radar chart, both only
+// ever populated from games where Scoring was actually configured with
 // this team - team_roster.json's own docstring is explicit that a named
-// team otherwise has no link to any per-video geometric side at all (see
+// team otherwise has no link to any per-game geometric side at all (see
 // the caveat banner below).
 export function TeamStatsPage() {
   const [searchParams] = useSearchParams();
@@ -96,7 +96,7 @@ export function TeamStatsPage() {
   }
 
   const hitsByTypeTotal = Object.values(stats.hits_by_type).reduce((a, b) => a + b, 0);
-  const hasRecord = stats.videos_with_scoring > 0;
+  const hasRecord = stats.games_with_scoring > 0;
 
   return (
     <Box sx={{ maxWidth: 900 }}>
@@ -112,9 +112,9 @@ export function TeamStatsPage() {
         <>
           <Grid container spacing={2} sx={{ mb: 2 }}>
             <StatTile value={`${stats.match_wins}-${stats.match_losses}`} label="Match record" />
-            <StatTile value={`${stats.game_wins}-${stats.game_losses}`} label="Game record" />
-            <StatTile value={stats.videos_with_scoring} label="Scored videos" />
-            <StatTile value={stats.videos_total} label="Total videos" />
+            <StatTile value={`${stats.set_wins}-${stats.set_losses}`} label="Set record" />
+            <StatTile value={stats.games_with_scoring} label="Scored games" />
+            <StatTile value={stats.games_total} label="Total games" />
           </Grid>
 
           {stats.radar.some((p) => p.sample_size_a > 0 || p.sample_size_b > 0) && (
@@ -123,7 +123,7 @@ export function TeamStatsPage() {
                 Win % by action
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                Solid = {stats.team_name}, dashed = opponents (combined across every scored video).
+                Solid = {stats.team_name}, dashed = opponents (combined across every scored game).
               </Typography>
               <RadarChart radar={stats.radar} />
             </Box>
@@ -131,8 +131,8 @@ export function TeamStatsPage() {
         </>
       ) : (
         <Alert severity="info" sx={{ mb: 3 }}>
-          No scored videos yet for {stats.team_name} - configure Scoring (Setup tab → Scoring Determination) with
-          this team on at least one video to see a win/loss record and win-rate radar here.
+          No scored games yet for {stats.team_name} - configure Scoring (Setup tab → Scoring Determination) with
+          this team on at least one game to see a win/loss record and win-rate radar here.
         </Alert>
       )}
 
@@ -192,13 +192,13 @@ export function TeamStatsPage() {
       )}
 
       <Typography variant="subtitle2" sx={{ mb: 1 }}>
-        Videos
+        Games
       </Typography>
-      {stats.videos.length === 0 ? (
-        <Typography color="text.secondary">Not featured in any finished video yet.</Typography>
+      {stats.games.length === 0 ? (
+        <Typography color="text.secondary">Not featured in any finished game yet.</Typography>
       ) : (
         <Stack spacing={1}>
-          {stats.videos.map((v) => (
+          {stats.games.map((v) => (
             <Card
               key={v.job_id}
               variant="outlined"
@@ -209,10 +209,10 @@ export function TeamStatsPage() {
                   {v.original_filename}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  {v.game_wins}-{v.game_losses} games
+                  {v.set_wins}-{v.set_losses} sets
                 </Typography>
               </Box>
-              <Button size="small" component={RouterLink} to={`/video?job=${v.job_id}`} sx={{ flexShrink: 0 }}>
+              <Button size="small" component={RouterLink} to={`/game?job=${v.job_id}`} sx={{ flexShrink: 0 }}>
                 Open
               </Button>
             </Card>

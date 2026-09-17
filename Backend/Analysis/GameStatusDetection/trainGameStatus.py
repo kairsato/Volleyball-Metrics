@@ -49,7 +49,7 @@ DEFAULT_DATASET_ROOTS = [
 ]
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
 
-CACHE_DIR = Path(__file__).resolve().parents[1] / "MachineLearning" / "dataset_gameStatusDetection"
+CACHE_DIR = Path(__file__).resolve().parents[2] / "MachineLearning" / "dataset_gameStatusDetection"
 MANIFEST_NAME = "manifest.json"
 
 # One training example every this many frames - a multiple of STRIDE_FRAMES

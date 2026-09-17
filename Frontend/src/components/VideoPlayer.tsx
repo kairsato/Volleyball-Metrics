@@ -24,11 +24,12 @@ import SettingsIcon from "@mui/icons-material/Settings";
 import SpeedIcon from "@mui/icons-material/Speed";
 import VolumeOffIcon from "@mui/icons-material/VolumeOff";
 import VolumeUpIcon from "@mui/icons-material/VolumeUp";
-import type { BallTrajectoryPoint, Game, PlayerTrajectoryFrame, Rally, RallyWinner } from "../lib/types";
+import type { BallTrajectoryPoint, GameStatusSegment, PlayerTrajectoryFrame, Rally, RallyWinner, Set } from "../lib/types";
 import { findIndexAtOrBefore } from "../lib/timeSeries";
 import { BallMinimap } from "./BallMinimap";
 import { BallTrackingOverlay } from "./BallTrackingOverlay";
 import { BallTrajectoryOverlay } from "./BallTrajectoryOverlay";
+import { GameStatusOverlay } from "./GameStatusOverlay";
 import { PlayerTrackingOverlay } from "./PlayerTrackingOverlay";
 import { computeCurrentScore, ScoreOverlay } from "./ScoreOverlay";
 
@@ -51,6 +52,13 @@ interface AnnotationSettings {
   playerTracking: boolean;
   score: boolean;
   minimap: boolean;
+  // GameStatusDetection's own raw no-play/play/service call, shown directly
+  // rather than anything derived from it - see GameStatusOverlay's own doc
+  // comment. Driven by its own `gameStatusSegments` prop rather than
+  // rallies/scoreRallies (see hasGameStatus below), so it stays available
+  // on a page that withholds scoreRallies specifically to keep Score off
+  // (Scoring Determination - see ScoringDeterminationPage).
+  gameStatus: boolean;
   // Shows each player's raw bounding box plus a name+stable_id label -
   // independent of playerTracking's own simplified name-only view (both
   // can be on together). Meant for checking detection/identification
@@ -67,6 +75,7 @@ const DEFAULT_ANNOTATIONS: AnnotationSettings = {
   // other four were added, so this keeps that existing behavior rather
   // than suddenly hiding something that was always there.
   minimap: true,
+  gameStatus: false,
   debug: false,
 };
 
@@ -153,6 +162,11 @@ interface VideoPlayerProps {
   qualities?: string[];
   quality?: string;
   onQualityChange?: (quality: string) => void;
+  // Display label for the "original" quality entry, e.g.
+  // "Original (1920x1080, 42 Mbps)" - see QualitiesOut.original_label.
+  // Falls back to a bare "Original" while unset (matches the label's own
+  // server-side default before getQualities resolves).
+  originalQualityLabel?: string;
   // Omit to leave out the Minimap/Ball tracking annotations entirely (see
   // BallMinimap.tsx/BallTrackingOverlay.tsx) - only Results' main player
   // passes this today. Ball tracking only needs points/frameW&H; Minimap
@@ -190,11 +204,16 @@ interface VideoPlayerProps {
   // than pre-joined by the caller).
   rallies?: Rally[];
   scoreRallies?: RallyWinner[];
+  // Omit to leave out the Game status annotation - independent of
+  // rallies/scoreRallies above (see GameStatusOverlay's own doc comment for
+  // why it needs its own, differently-shaped data rather than reusing
+  // rallies), so a caller can offer this without taking on Score.
+  gameStatusSegments?: GameStatusSegment[];
   // Set boundaries, for the scrubber's always-visible chapter dividers
-  // (see hasRallySegments below) - a game's own start_rally_index is
+  // (see hasRallySegments below) - a set's own start_rally_index is
   // looked up against `rallies` for its actual start_time_s, same as
   // scoreRallies is kept id-only rather than pre-joined by the caller.
-  games?: Game[];
+  sets?: Set[];
   teamXName?: string;
   teamYName?: string;
   // Left/Right arrow keys skip ARROW_SEEK_STEP_S back/forward, document-wide
@@ -232,6 +251,7 @@ export function VideoPlayer({
   qualities,
   quality,
   onQualityChange,
+  originalQualityLabel = "Original",
   ballTrajectory,
   courtLengthM,
   courtWidthM,
@@ -241,7 +261,8 @@ export function VideoPlayer({
   playerTrajectory,
   rallies,
   scoreRallies,
-  games,
+  gameStatusSegments,
+  sets,
   teamXName,
   teamYName,
   enableArrowKeySeek = false,
@@ -290,6 +311,25 @@ export function VideoPlayer({
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = playbackRate;
   }, [playbackRate, videoRef]);
+
+  // Same pattern as playbackRate above - and the one volume/mute were
+  // missing entirely. Without this, the persisted volume/isMuted state
+  // (read from localStorage on mount, see readPersistedSettings) only ever
+  // drove the slider/icon's own display: the <video> element itself starts
+  // every page load at the browser's own default (volume 1, unmuted) and
+  // nothing ever pushed the restored value onto it, so a reload showed the
+  // right slider position while actually playing back at full volume.
+  // handleVolumeChange/toggleMute below still write straight to the
+  // element too, for a click's own immediate effect - this is what makes
+  // that value stick across a reload rather than only for the session that
+  // set it.
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.volume = volume;
+  }, [volume, videoRef]);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.muted = isMuted;
+  }, [isMuted, videoRef]);
 
   useEffect(() => {
     try {
@@ -475,6 +515,8 @@ export function VideoPlayer({
       if (!el) return;
       el.currentTime = resumeTime;
       el.playbackRate = playbackRate;
+      el.volume = volume;
+      el.muted = isMuted;
       if (wasPlaying) void el.play();
       el.removeEventListener("loadedmetadata", handleLoaded);
     }
@@ -482,6 +524,11 @@ export function VideoPlayer({
   }
 
   const hasQualityOptions = Boolean(qualities && qualities.length > 1);
+
+  function qualityLabel(q: string): string {
+    if (q === "original") return originalQualityLabel;
+    return q;
+  }
   const hasBallTracking = Boolean(ballTrajectory && ballTrajectory.length > 0);
   // Needs hit timing to find the current segment's boundaries (see
   // BallTrajectoryOverlay's own doc comment) on top of everything Ball
@@ -490,7 +537,14 @@ export function VideoPlayer({
   const hasMinimap = Boolean(ballTrajectory && ballTrajectory.length > 0 && courtLengthM && courtWidthM);
   const hasPlayerTracking = Boolean(playerTrajectory && playerTrajectory.length > 0);
   const hasScore = Boolean(rallies && scoreRallies);
-  const hasAnyAnnotation = hasBallTracking || hasBallArc || hasMinimap || hasPlayerTracking || hasScore;
+  // Its own prop, deliberately not derived from rallies/scoreRallies like
+  // hasScore/hasRallySegments above - Game Status shows GameStatusDetection's
+  // raw no-play/play/service segments (see GameStatusOverlay's own doc
+  // comment), which rallies alone can't represent. This is also what lets a
+  // caller offer Game Status while still withholding scoreRallies to keep
+  // Score off.
+  const hasGameStatus = Boolean(gameStatusSegments && gameStatusSegments.length > 0);
+  const hasAnyAnnotation = hasBallTracking || hasBallArc || hasMinimap || hasPlayerTracking || hasScore || hasGameStatus;
 
   // BallMinimap's small corner court-diagram dot still just snaps to "the
   // point/frame at or before now" - passing a stable array reference
@@ -521,21 +575,21 @@ export function VideoPlayer({
   // timing AND a determined winner per rally.
   const hasRallySegments = Boolean(rallies && rallies.length > 0 && scoreRallies && duration > 0);
 
-  // Chapter-divider positions: one per game TRANSITION, not per game - the
-  // first game has no prior game to be divided from (what comes before it
+  // Chapter-divider positions: one per set TRANSITION, not per set - the
+  // first set has no prior set to be divided from (what comes before it
   // is just pre-match footage, already outside the bound range), so it's
-  // dropped rather than marked. Position is each remaining game's
-  // start_time_s, i.e. its first rally's own start_time_s (games only
-  // carry rally-index ranges, not timing - see the Game type's own doc).
-  // Skipping is deliberate here, not filtered later - a game whose start
+  // dropped rather than marked. Position is each remaining set's
+  // start_time_s, i.e. its first rally's own start_time_s (sets only
+  // carry rally-index ranges, not timing - see the Set type's own doc).
+  // Skipping is deliberate here, not filtered later - a set whose start
   // rally isn't in `rallies` (or whose start lands at/past the very edges
   // of the timeline) just adds no divider rather than one at the wrong
   // spot.
-  const gameStartTimes = (games ?? [])
+  const setStartTimes = (sets ?? [])
     .slice()
-    .sort((a, b) => a.game_index - b.game_index)
+    .sort((a, b) => a.set_index - b.set_index)
     .slice(1)
-    .map((g) => rallies?.find((r) => r.rally_index === g.start_rally_index)?.start_time_s)
+    .map((s) => rallies?.find((r) => r.rally_index === s.start_rally_index)?.start_time_s)
     .filter((t): t is number => t !== undefined && t > 0 && t < duration);
 
   // A YouTube-retention-graph-style line above the scrubber, but plotting
@@ -548,29 +602,29 @@ export function VideoPlayer({
   // rally, with a floor so even the shortest rally still traces a visible
   // line rather than flattening to the very bottom.
   //
-  // One polyline per game rather than one continuous line for the whole
-  // match, so a game boundary shows up as an actual break in the line
+  // One polyline per set rather than one continuous line for the whole
+  // match, so a set boundary shows up as an actual break in the line
   // itself - no divider drawn across it, which would either paint a solid
   // bar over the (largely transparent) graph area or need to match every
   // background it might sit over.
   const GRAPH_HEIGHT = 28;
   const GRAPH_MIN_HEIGHT_FRAC = 0.12;
   // Thicker than the old 4px bar - easier to grab and to actually see the
-  // game dividers cut into.
+  // set dividers cut into.
   const BAR_HEIGHT = 8;
   const maxRallyDuration = rallies && rallies.length > 0 ? Math.max(...rallies.map((r) => r.duration_s)) : 0;
-  const rallyGroupsByGame: Rally[][] =
-    games && games.length > 0
-      ? games
+  const rallyGroupsBySet: Rally[][] =
+    sets && sets.length > 0
+      ? sets
           .slice()
-          .sort((a, b) => a.game_index - b.game_index)
-          .map((g) => (rallies ?? []).filter((r) => r.rally_index >= g.start_rally_index && r.rally_index <= g.end_rally_index))
+          .sort((a, b) => a.set_index - b.set_index)
+          .map((s) => (rallies ?? []).filter((r) => r.rally_index >= s.start_rally_index && r.rally_index <= s.end_rally_index))
       : rallies
         ? [rallies]
         : [];
   const graphSegments =
     duration > 0 && maxRallyDuration > 0
-      ? rallyGroupsByGame
+      ? rallyGroupsBySet
           .map((group) =>
             group
               .slice()
@@ -590,12 +644,12 @@ export function VideoPlayer({
   // The score as of wherever the pointer is currently hovering, for the
   // preview tooltip - same computeCurrentScore ScoreOverlay uses for "the
   // score right now" during actual playback, just fed a hovered time
-  // instead of the playing one. Falls back to 0-0 in game 1 rather than
+  // instead of the playing one. Falls back to 0-0 in set 1 rather than
   // hiding the tooltip when hovering before any rally has concluded yet
   // (e.g. right at the very start of the video).
   const hoverScore =
     hasRallySegments && hoverTimeS !== null
-      ? (computeCurrentScore(rallies!, scoreRallies!, hoverTimeS) ?? { gameIndex: 0, x: 0, y: 0 })
+      ? (computeCurrentScore(rallies!, scoreRallies!, hoverTimeS) ?? { setIndex: 0, x: 0, y: 0 })
       : null;
 
   function handleScrubberMouseMove(event: ReactMouseEvent<HTMLDivElement>) {
@@ -690,6 +744,9 @@ export function VideoPlayer({
           currentTimeS={currentTime}
         />
       )}
+      {annotations.gameStatus && gameStatusSegments && gameStatusSegments.length > 0 && (
+        <GameStatusOverlay segments={gameStatusSegments} currentTimeS={currentTime} />
+      )}
 
       <Box
         className="video-controls-bar"
@@ -720,7 +777,7 @@ export function VideoPlayer({
               way YouTube's own always-on retention graph does. Plots rally
               duration, not rewatch rate - see graphSegments above for why
               that's the stand-in for "this moment mattered more". One
-              polyline per game so a game boundary is an actual break in
+              polyline per set so a set boundary is an actual break in
               the line, not a divider drawn across it. */}
           {graphSegments.length > 0 && (
             <Box
@@ -751,10 +808,10 @@ export function VideoPlayer({
 
           {hasRallySegments && (
             <>
-              {/* Game-boundary markers, always visible - YouTube's own
+              {/* Set-boundary markers, always visible - YouTube's own
                   chapter-divider idiom: a thin cut of background colour
                   punched through the bar rather than a highlight drawn
-                  over it. One per game TRANSITION (see gameStartTimes
+                  over it. One per set TRANSITION (see setStartTimes
                   above), not per rally - a single match can have dozens
                   of rallies, which would turn the bar into a solid dashed
                   line rather than a handful of meaningful dividers. */}
@@ -769,7 +826,7 @@ export function VideoPlayer({
                   pointerEvents: "none",
                 }}
               >
-                {gameStartTimes.map((t) => (
+                {setStartTimes.map((t) => (
                   <Box
                     key={t}
                     sx={{
@@ -806,7 +863,7 @@ export function VideoPlayer({
                   }}
                 >
                   <Typography variant="caption" sx={{ display: "block", opacity: 0.75, lineHeight: 1.2 }}>
-                    {formatTime(hoverTimeS ?? 0)} · Set {hoverScore.gameIndex + 1}
+                    {formatTime(hoverTimeS ?? 0)} · Set {hoverScore.setIndex + 1}
                   </Typography>
                   <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }}>
                     {teamXName ?? "Team X"} {hoverScore.x} - {hoverScore.y} {teamYName ?? "Team Y"}
@@ -833,11 +890,36 @@ export function VideoPlayer({
                 width: 14,
                 height: 14,
                 opacity: 0,
+                // Replaces MUI's own default `transition` (left/bottom,
+                // 150ms - see Slider.js's SliderThumb styles) rather than
+                // adding to it: setting the shorthand again drops whatever
+                // properties aren't named here, which is what actually
+                // keeps this thumb's OWN position instant below - only its
+                // opacity (the hover reveal) animates.
                 transition: "opacity 0.15s ease",
               },
               "&:hover .MuiSlider-thumb, & .MuiSlider-thumb.Mui-active": { opacity: 1 },
               "& .MuiSlider-rail": { opacity: 0.35, height: BAR_HEIGHT },
-              "& .MuiSlider-track": { height: BAR_HEIGHT, border: "none" },
+              "& .MuiSlider-track": {
+                height: BAR_HEIGHT,
+                border: "none",
+                // MUI's own SliderTrack transitions left/width/bottom/height
+                // over 150ms by default - fine for a value that changes in
+                // occasional discrete jumps, but this one is driven by the
+                // rAF loop above at up to 60 updates/sec while playing. A
+                // fresh `value` retargets that transition before the
+                // previous one is a tenth of the way done, so the filled
+                // portion perpetually chases a moving target and never
+                // reaches it - it visibly trails behind the thumb (whose
+                // own position transition is already gone, see above)
+                // rather than reaching all the way to it. Turning this off
+                // makes the fill jump straight to each new value exactly
+                // like the thumb already does, which is what "smooth"
+                // actually looks like at 60 updates/sec - the motion comes
+                // from how often the value changes, not from an added CSS
+                // animation on top of it.
+                transition: "none",
+              },
             }}
           />
         </Box>
@@ -970,7 +1052,7 @@ export function VideoPlayer({
               </ListItemIcon>
               <ListItemText>Quality</ListItemText>
               <Typography variant="body2" sx={{ ml: 3, color: "rgba(255,255,255,0.6)" }}>
-                {quality === "original" ? "Original" : quality}
+                {quality ? qualityLabel(quality) : quality}
               </Typography>
               <ChevronRightIcon fontSize="small" sx={{ ml: 0.5, color: "rgba(255,255,255,0.6)" }} />
             </MenuItem>
@@ -1027,7 +1109,7 @@ export function VideoPlayer({
               }}
             >
               <ListItemIcon>{q === quality ? <CheckIcon fontSize="small" /> : null}</ListItemIcon>
-              {q === "original" ? "Original" : q}
+              {qualityLabel(q)}
             </MenuItem>
           )),
         ]}
@@ -1068,6 +1150,12 @@ export function VideoPlayer({
             <MenuItem key="minimap" onClick={() => toggleAnnotation("minimap")}>
               <Checkbox checked={annotations.minimap} size="small" sx={{ p: 0, mr: 1.5 }} />
               Minimap
+            </MenuItem>
+          ),
+          hasGameStatus && (
+            <MenuItem key="gameStatus" onClick={() => toggleAnnotation("gameStatus")}>
+              <Checkbox checked={annotations.gameStatus} size="small" sx={{ p: 0, mr: 1.5 }} />
+              Game status
             </MenuItem>
           ),
           hasPlayerTracking && (

@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 
-// Court calibration used to run up front, before any of these, so it was
-// listed here as the first stage - it's now a post-processing Setup tab
-// step (see CourtCalibrationPage.tsx) that doesn't run as part of
-// processing at all, so it's no longer one of the stages this list is
-// tracking progress through.
-export const PHASE_ONE_STAGES = ["player_tracking", "ball_detection", "game_status", "action_detection"];
+// Order matches Backend/API/jobs.PHASE_ONE_STAGES - game_status runs first
+// so player_tracking/ball_detection can skip dead time between rallies
+// (see that constant's own comment). Court calibration used to run up
+// front, before any of these, so it was listed here as the first stage -
+// it's now a post-processing Setup tab step (see CourtCalibrationPage.tsx)
+// that doesn't run as part of processing at all, so it's no longer one of
+// the stages this list is tracking progress through.
+export const PHASE_ONE_STAGES = ["game_status", "player_tracking", "ball_detection", "action_detection"];
 
 export const PHASE_TWO_STAGES = ["consolidating", "dashboard", "rendering", "transcoding"];
 
@@ -38,7 +40,7 @@ export function formatDuration(seconds: number): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
-// Date AND time, not just the date - unlike VideoGrid's upload-date display,
+// Date AND time, not just the date - unlike GameGrid's upload-date display,
 // same-day reruns are common enough here (someone reprocessing right after
 // checking results) that the date alone couldn't tell two runs apart.
 export function formatProcessedAt(isoDate: string): string {

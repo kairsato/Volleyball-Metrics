@@ -1,6 +1,6 @@
 import type { ActionQualityCategory } from "../../lib/types";
 
-export type ActionCategoryKey = "serve" | "receive" | "set" | "spike";
+export type ActionCategoryKey = "serve" | "receive" | "set" | "spike" | "block";
 
 // Only factors a player can actually do something about get a tip - "time
 // given" (set) reflects how good the pass before it was, and "blockers"
@@ -26,6 +26,11 @@ const TIPS: Record<ActionCategoryKey, Record<string, string>> = {
     positioning: "Approach closer to the net before attacking to cut down the angle.",
     speed: "Work on approach/arm speed to hit with more pace.",
     placement: "Aim away from where defenders are positioned rather than straight at them.",
+  },
+  block: {
+    positioning: "Get tighter to the net before jumping to close the angle for the hitter.",
+    reach: "Work on jump height and penetration over the net for a higher reach.",
+    timing: "Read the set earlier and time the jump closer to the hitter's contact.",
   },
 };
 

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import auth, network, share
+from .. import auth, network
+from ..services import share
 from ..schemas import AuthStatusOut, CaptchaOut, LoginIn, LoginOut, SetEnabledIn, SetPasswordIn, SuggestedPasswordOut
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])

@@ -21,6 +21,36 @@ function average(values: number[]): number | null {
   return values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : null;
 }
 
+export function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Keeps a category's weights summing to exactly 1 as one slider moves -
+// the changed factor takes the dragged value outright, and every other
+// factor is rescaled to fill the remaining share in the same proportions
+// they already had relative to each other (split evenly among them if
+// they'd all been at 0). This is what lets AnalyticsTab's sliders behave
+// as one compositional (100%-total) group instead of independent 0-1 bars.
+export function redistributeWeights(
+  weights: Record<string, number>,
+  changedKey: string,
+  rawNewValue: number,
+): Record<string, number> {
+  const newValue = Math.max(0, Math.min(1, rawNewValue));
+  const otherKeys = Object.keys(weights).filter((k) => k !== changedKey);
+  const remaining = 1 - newValue;
+  const othersSum = otherKeys.reduce((sum, k) => sum + weights[k], 0);
+
+  const result: Record<string, number> = { [changedKey]: newValue };
+  for (const key of otherKeys) {
+    result[key] = othersSum > 0 ? (weights[key] / othersSum) * remaining : remaining / otherKeys.length;
+  }
+  return result;
+}
+
 export interface RecomputedPlayer {
   averageScore: number | null;
   count: number;

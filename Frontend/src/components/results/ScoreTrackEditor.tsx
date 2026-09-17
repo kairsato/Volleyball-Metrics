@@ -8,7 +8,7 @@ import Typography from "@mui/material/Typography";
 import type { Rally, ScoreResult } from "../../lib/types";
 import { formatTimestamp } from "./types";
 
-// Exported so GamesList (ScoreSection.tsx) can color its own team
+// Exported so SetsList (ScoreSection.tsx) can color its own team
 // names/scores with the same win/loss palette used here.
 export const WIN_COLOR = "#22c55e";
 export const LOSS_COLOR = "#ef4444";
@@ -16,9 +16,9 @@ const UNDECIDED_COLOR = "rgba(148, 163, 184, 0.35)";
 const UNCERTAIN_STRIPE =
   "repeating-linear-gradient(45deg, rgba(234,179,8,0.6) 0 4px, rgba(234,179,8,0.25) 4px 8px)";
 
-// Games alternate between these two tints just to make adjacent groups
+// Sets alternate between these two tints just to make adjacent groups
 // visually distinguishable - the color itself carries no other meaning.
-const GAME_TINTS = ["rgba(148, 163, 184, 0.18)", "rgba(148, 163, 184, 0.32)"];
+const SET_TINTS = ["rgba(148, 163, 184, 0.18)", "rgba(148, 163, 184, 0.32)"];
 
 const PX_PER_SECOND = 14;
 const MIN_COLUMN_PX = 30;
@@ -30,7 +30,7 @@ const LEGEND_WIDTH_PX = 120;
 // match this exactly (see the grid's default stretch alignment below).
 const TRACK_HEIGHT_PX = 200;
 
-// Seeking a rally/game jumps most of the way through it rather than to the
+// Seeking a rally/set jumps most of the way through it rather than to the
 // very start - the decisive moment (the point actually being won or lost)
 // is near the end, not the serve.
 const SEEK_FRACTION = 0.9;
@@ -42,7 +42,7 @@ interface ScoreTrackEditorProps {
   team2Name: string;
   currentTime: number;
   onSeek: (timeS: number) => void;
-  onToggleGameBoundary: (rallyIndex: number, split: boolean) => void;
+  onToggleSetBoundary: (rallyIndex: number, split: boolean) => void;
   onSetWinner: (rallyIndex: number, winner: "x" | "y" | null) => void;
 }
 
@@ -139,9 +139,9 @@ function LegendSwatch({ swatch, label }: { swatch: ReactNode; label: string }) {
   );
 }
 
-// Four tracks, top to bottom: which game each rally belongs to (the only
+// Four tracks, top to bottom: which set each rally belongs to (the only
 // row where boundaries can be moved, and where its own click seeks 90% of
-// the way through that whole game), the rally itself (fixed - click seeks
+// the way through that whole set), the rally itself (fixed - click seeks
 // 90% of the way through it), Team 1's outcome, and Team 2's - the last
 // two are just mirror images of each other (there are only two teams, so
 // one team's win is necessarily the other's loss) but both get their own
@@ -160,7 +160,7 @@ export function ScoreTrackEditor({
   team2Name,
   currentTime,
   onSeek,
-  onToggleGameBoundary,
+  onToggleSetBoundary,
   onSetWinner,
 }: ScoreTrackEditorProps) {
   const [dragTime, setDragTime] = useState<number | null>(null);
@@ -241,7 +241,7 @@ export function ScoreTrackEditor({
     >
       <Card variant="outlined" sx={{ gridArea: "board", height: "100%", display: "flex", minWidth: 0, p: 1 }}>
         <Stack sx={{ width: LABEL_WIDTH_PX, height: "100%", flexShrink: 0 }}>
-          {["Game", "Rally", team1Name, team2Name].map((label) => (
+          {["Set", "Rally", team1Name, team2Name].map((label) => (
             <Box key={label} sx={{ flex: 1, minHeight: ROW_HEIGHT_PX, display: "flex", alignItems: "center" }}>
               <Typography variant="caption" color="text.secondary" noWrap title={label}>
                 {label}
@@ -271,8 +271,8 @@ export function ScoreTrackEditor({
             const isLast = i === rallies.length - 1;
             const prevRecord = i > 0 ? recordByRally.get(rallies[i - 1].rally_index) : undefined;
             const nextRecord = !isLast ? recordByRally.get(rallies[i + 1].rally_index) : undefined;
-            const hasBoundaryAfter = isLast || record?.game_index !== nextRecord?.game_index;
-            const isFirstOfGame = i === 0 || record?.game_index !== prevRecord?.game_index;
+            const hasBoundaryAfter = isLast || record?.set_index !== nextRecord?.set_index;
+            const isFirstOfSet = i === 0 || record?.set_index !== prevRecord?.set_index;
 
             let team1Bg = UNDECIDED_COLOR;
             if (record?.winner === "x") team1Bg = WIN_COLOR;
@@ -297,24 +297,24 @@ export function ScoreTrackEditor({
               onSetWinner(rally.rally_index, current === null ? "y" : current === "y" ? "x" : null);
             }
 
-            function seekGame() {
-              const gameRallies = rallies.filter(
-                (r) => recordByRally.get(r.rally_index)?.game_index === record?.game_index,
+            function seekSet() {
+              const setRallies = rallies.filter(
+                (r) => recordByRally.get(r.rally_index)?.set_index === record?.set_index,
               );
-              if (gameRallies.length === 0) return;
-              seekInto(gameRallies[0].start_time_s, gameRallies[gameRallies.length - 1].end_time_s);
+              if (setRallies.length === 0) return;
+              seekInto(setRallies[0].start_time_s, setRallies[setRallies.length - 1].end_time_s);
             }
 
             return (
               <Fragment key={rally.rally_index}>
                 <Stack sx={{ flex: `${columnWidth(rally)} 0 ${columnWidth(rally)}px`, height: "100%" }}>
-                  <Tooltip title={`Game ${(record?.game_index ?? 0) + 1}`}>
+                  <Tooltip title={`Set ${(record?.set_index ?? 0) + 1}`}>
                     <Box
-                      onClick={seekGame}
+                      onClick={seekSet}
                       sx={{
                         flex: 1,
                         minHeight: ROW_HEIGHT_PX,
-                        bgcolor: GAME_TINTS[(record?.game_index ?? 0) % 2],
+                        bgcolor: SET_TINTS[(record?.set_index ?? 0) % 2],
                         cursor: "pointer",
                         display: "flex",
                         alignItems: "center",
@@ -322,9 +322,9 @@ export function ScoreTrackEditor({
                         "&:hover": { filter: "brightness(1.3)" },
                       }}
                     >
-                      {isFirstOfGame && (
+                      {isFirstOfSet && (
                         <Typography variant="caption" noWrap sx={{ fontSize: 10, fontWeight: 600 }}>
-                          Game {(record?.game_index ?? 0) + 1}
+                          Set {(record?.set_index ?? 0) + 1}
                         </Typography>
                       )}
                     </Box>
@@ -385,10 +385,10 @@ export function ScoreTrackEditor({
                 </Stack>
 
                 {!isLast && (
-                  <Tooltip title={hasBoundaryAfter ? "Merge with next game" : "Move this game's end here"}>
+                  <Tooltip title={hasBoundaryAfter ? "Merge with next set" : "Move this set's end here"}>
                     <Stack sx={{ width: BOUNDARY_GAP_PX, flexShrink: 0, flexGrow: 0, height: "100%" }}>
                       <Box
-                        onClick={() => onToggleGameBoundary(rally.rally_index, !hasBoundaryAfter)}
+                        onClick={() => onToggleSetBoundary(rally.rally_index, !hasBoundaryAfter)}
                         sx={{
                           flex: 1,
                           minHeight: ROW_HEIGHT_PX,

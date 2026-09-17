@@ -8,18 +8,22 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from .. import action_quality, calibration, config, players, teams, warmup
+from .. import config
+from ..services import action_quality, calibration, heuristics, players, teams, warmup
 from ..jobs import store
 from ..schemas import (
     ActionQualityOut,
     BallTrajectoryOut,
     BallTrajectoryPointOut,
+    GameStatusOut,
+    GameStatusSegmentOut,
     MatchupOut,
     PlayerBoxOut,
     PlayerTrajectoryFrameOut,
     PlayerTrajectoryOut,
     QualitiesOut,
     RallyOut,
+    RallyOverrideIn,
     ResultsOut,
 )
 
@@ -33,7 +37,7 @@ for _directory in (BACKEND_DIR, ANALYSIS_DIR):
         sys.path.insert(0, str(_directory))
 
 from BallDetection.ballDetection import SPEED_LOG_NAME, TRAJECTORY_LOG_NAME, load_homography  # noqa: E402
-from CourtDefinition.court import COURT_LENGTH, COURT_WIDTH, NET_HEIGHT_M, pixel_to_court  # noqa: E402
+from CourtDetection.court import COURT_LENGTH, COURT_WIDTH, NET_HEIGHT_M, pixel_to_court  # noqa: E402
 from PostProcessing.transcode import TRANSCODE_TIERS, rendition_filename  # noqa: E402
 
 router = APIRouter(prefix="/api/jobs/{job_id}", tags=["results"])
@@ -59,11 +63,28 @@ def _require_job(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
 
+def _lowest_res_video(job_id: str) -> Optional[Path]:
+    """The smallest-resolution rendition actually generated for this job
+    (see transcode.py's TRANSCODE_TIERS, lowest-to-highest target height),
+    falling back to the untouched original upload when no rendition exists
+    yet (still processing, or a job that predates transcoding). Reading a
+    thumbnail frame out of a multi-hundred-MB-to-multi-GB original is far
+    slower to seek/decode than the same read against its own 480p rendition
+    - a few hundred KB to a couple MB per frame's worth of I/O either way,
+    but a much smaller file to open and index into."""
+    output_dir = config.output_dir(job_id)
+    for tier in sorted(TRANSCODE_TIERS, key=lambda t: TRANSCODE_TIERS[t][0]):
+        candidate = output_dir / rendition_filename(tier)
+        if candidate.exists():
+            return candidate
+    return config.find_input_video(job_id)
+
+
 @router.get("/thumbnail")
 async def get_thumbnail(job_id: str):
     _require_job(job_id)
 
-    video_file = config.find_input_video(job_id)
+    video_file = _lowest_res_video(job_id)
     if video_file is None:
         raise HTTPException(status_code=404, detail="No uploaded video found for this job")
 
@@ -148,7 +169,7 @@ async def get_results(job_id: str):
 
 def _net_height_m(output_path: Path) -> float:
     """The calibrated net height (metres) for this job, or the standard
-    men's height (CourtDefinition.court.NET_HEIGHT_M) as a fallback -
+    men's height (CourtDetection.court.NET_HEIGHT_M) as a fallback -
     same default calibration.py itself uses before one's explicitly set.
     Deliberately a lightweight direct read rather than calibration.
     existing_points (which needs a frame size just to also validate/return
@@ -241,6 +262,128 @@ async def get_ball_trajectory(job_id: str):
     return BallTrajectoryOut(
         job_id=job_id, points=points, court_length_m=COURT_LENGTH, court_width_m=COURT_WIDTH,
         net_height_m=net_height_m, frame_w=frame_w, frame_h=frame_h,
+    )
+
+
+@router.get("/game-status", response_model=GameStatusOut)
+async def get_game_status(job_id: str):
+    """GameStatusDetection's own raw no-play/play/service segments (see
+    gameStatusDetection.py's _build_segments) for the Game status
+    annotation - VideoPlayer.tsx's GameStatusOverlay. Separate from
+    /results' own `rallies` (which is this same file's MERGED play+service
+    windows, kept for Score/the scrubber's chapter dividers) rather than
+    folded into it, for the same reason ball/player trajectory get their
+    own endpoints instead of joining ResultsOut: every other /results
+    caller (StatsTab, RalliesTab, PlayerStatsPage, ...) would otherwise pay
+    to parse an array it never uses.
+
+    A job whose game_status.json predates `segments` (written by an older
+    detectGameStatus, before this field existed) - or has no game_status.json
+    at all yet - gets an empty list back rather than an error, same as
+    /ball-trajectory's own best-effort handling; GameStatusOverlay simply
+    doesn't render for it until the job's game_status stage re-runs.
+
+    `rallies` here is the SAME underlying array /results' own `rallies`
+    field reads, but deliberately NOT warmup-rebased the way that one is -
+    the Debug review page's rally editor (PUT .../game-status/rallies
+    below) reads and writes in this same raw basis, so round-tripping
+    through warmup-relative time here would silently shift every boundary
+    by the warmup offset on save.
+    """
+    _require_job(job_id)
+
+    output_path = config.output_dir(job_id)
+    status_file = output_path / config.GAME_STATUS_FILE_NAME
+    segments_raw: list[dict] = []
+    rallies_raw: list[dict] = []
+    if status_file.exists():
+        try:
+            status = json.loads(status_file.read_text())
+            segments_raw = status.get("segments", [])
+            rallies_raw = status.get("rallies", [])
+        except json.JSONDecodeError:
+            pass
+
+    warmup_cfg = warmup.load_config(output_path)
+    if warmup.is_active(warmup_cfg):
+        job = store.get(job_id)
+        start_s, end_s = warmup.effective_range(warmup_cfg, job.duration_s if job else None)
+        # rebase_rallies is generic over anything shaped like {start_time_s,
+        # end_time_s, ...} - a segment fits that shape exactly, "rallies" in
+        # its name notwithstanding. Only `segments` (the annotation) gets
+        # this treatment - `rallies` below stays raw, see the docstring.
+        segments_raw = warmup.rebase_rallies(segments_raw, start_s, end_s)
+
+    return GameStatusOut(
+        job_id=job_id,
+        segments=[GameStatusSegmentOut(**s) for s in segments_raw],
+        rallies=[RallyOut(**r) for r in rallies_raw],
+    )
+
+
+@router.put("/game-status/rallies", response_model=GameStatusOut)
+async def override_rallies(job_id: str, body: RallyOverrideIn):
+    """Lets the Debug review page's rally editor replace GameStatusDetection's
+    own `rallies` (the merged play+service windows action_detection/
+    consolidate.py actually key off via rally_index - see
+    ActionDetection.actionDetection._rally_for_frame) with hand-corrected
+    boundaries, when the automatic rally segmentation missed or misdrew one.
+
+    Recomputes rally_index (by sorted start_time_s), start_frame/end_frame
+    (from the job's own detected fps) and duration_s server-side rather
+    than trusting whatever a client sends for those - only start_time_s/
+    end_time_s are genuinely user input here. `segments` (the finer no-play/
+    play/service breakdown used only for the read-only annotation overlay)
+    is left untouched; only downstream consumers of `rallies` itself
+    (action attribution, per-rally stats) are affected, and only once the
+    caller re-runs recalibrate/redo to regenerate them from these new
+    boundaries."""
+    _require_job(job_id)
+
+    output_path = config.output_dir(job_id)
+    status_file = output_path / config.GAME_STATUS_FILE_NAME
+    if not status_file.exists():
+        raise HTTPException(status_code=409, detail="Job hasn't run game status detection yet.")
+
+    try:
+        status = json.loads(status_file.read_text())
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=500, detail="game_status.json is corrupt.")
+
+    fps = status.get("fps") or 30.0
+    total_frames = status.get("total_frames")
+    duration_s = (total_frames / fps) if total_frames else None
+
+    bounds = sorted(body.rallies, key=lambda r: r.start_time_s)
+    for rally in bounds:
+        if rally.end_time_s <= rally.start_time_s:
+            raise HTTPException(status_code=400, detail="Each rally's end must be after its start.")
+        if rally.start_time_s < 0:
+            raise HTTPException(status_code=400, detail="A rally can't start before 0:00.")
+        if duration_s is not None and rally.end_time_s > duration_s + 0.5:
+            raise HTTPException(status_code=400, detail="A rally can't end after the video does.")
+    for prev, current in zip(bounds, bounds[1:]):
+        if current.start_time_s < prev.end_time_s:
+            raise HTTPException(status_code=400, detail="Rallies can't overlap.")
+
+    rallies_out = []
+    for index, rally in enumerate(bounds):
+        rallies_out.append({
+            "rally_index": index,
+            "start_frame": round(rally.start_time_s * fps),
+            "end_frame": round(rally.end_time_s * fps),
+            "start_time_s": rally.start_time_s,
+            "end_time_s": rally.end_time_s,
+            "duration_s": rally.end_time_s - rally.start_time_s,
+        })
+
+    status["rallies"] = rallies_out
+    status_file.write_text(json.dumps(status, indent=2))
+
+    return GameStatusOut(
+        job_id=job_id,
+        segments=[GameStatusSegmentOut(**s) for s in status.get("segments", [])],
+        rallies=[RallyOut(**r) for r in rallies_out],
     )
 
 
@@ -346,6 +489,11 @@ async def get_action_quality(job_id: str):
     if not stats_file.exists():
         raise HTTPException(status_code=409, detail="Job hasn't finalized yet - consolidate first.")
 
+    # Weights/reference values are tunable from the Configuration page's
+    # "Consolidating stats" section - pushed onto the module here, right
+    # before the (cached) computation, rather than once at import time, so
+    # a profile switch takes effect on the very next request.
+    heuristics.apply_overrides("consolidating", action_quality)
     result = action_quality.compute_action_quality(job_id, output_path)
     return ActionQualityOut(**result)
 
@@ -387,7 +535,31 @@ async def get_qualities(job_id: str):
     _require_job(job_id)
     output_dir = config.output_dir(job_id)
     generated = [tier for tier in TRANSCODE_TIERS if (output_dir / rendition_filename(tier)).exists()]
-    return QualitiesOut(qualities=["original", *generated])
+    return QualitiesOut(qualities=["original", *generated], original_label=_original_label(job_id))
+
+
+def _original_label(job_id: str) -> str:
+    """The "Original" menu label, e.g. "Original (1920x1080, 42 Mbps)" - lets
+    a viewer tell it apart from the downscaled renditions below (see
+    transcode.py's module docstring). Bitrate is derived from file size / duration rather
+    than read from the container itself - this codebase avoids shelling out
+    to ffprobe wherever a cheap approximation will do (see
+    video_metadata.py's own docstring for the same reasoning) - so it's an
+    average over the whole file, not the peak instantaneous rate. Falls back
+    to a bare "Original" if the source file/duration/dimensions can't be
+    read for any reason."""
+    video_file = config.find_input_video(job_id)
+    if video_file is None:
+        return "Original"
+    try:
+        width, height = calibration.frame_size(video_file)
+        duration_s = calibration.video_duration_s(video_file)
+        if width <= 0 or height <= 0 or not duration_s:
+            return "Original"
+        mbps = (video_file.stat().st_size * 8) / duration_s / 1_000_000
+        return f"Original ({width}x{height}, {mbps:.0f} Mbps)"
+    except OSError:
+        return "Original"
 
 
 @router.get("/video")

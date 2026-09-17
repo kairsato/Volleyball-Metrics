@@ -12,7 +12,8 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import PlaylistPlayIcon from "@mui/icons-material/PlaylistPlay";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import { api } from "../../lib/api";
-import type { Game, MatchupOut, Rally, ScoreOut, TeamEntry } from "../../lib/types";
+import type { MatchupOut, Rally, ScoreOut, Set as VolleySet, TeamEntry } from "../../lib/types";
+import { scrollElementToSectionTop } from "../../lib/scroll";
 import { formatTimestamp, type FlatEvent } from "./types";
 
 interface RalliesTabProps {
@@ -91,7 +92,7 @@ function RallyCard({ rally, events, isCurrent, winner, onSeek, onPlayAll }: Rall
   const players = Array.from(new Set(events.map((e) => e.playerName)));
 
   useEffect(() => {
-    if (isCurrent) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (isCurrent && ref.current) scrollElementToSectionTop(ref.current);
   }, [isCurrent]);
 
   return (
@@ -152,32 +153,32 @@ function RallyCard({ rally, events, isCurrent, winner, onSeek, onPlayAll }: Rall
   );
 }
 
-// Bundles rallies under the game they fall within (ScoreOut.result.games'
+// Bundles rallies under the set they fall within (ScoreOut.result.sets'
 // start/end are rally_index values, not list positions - see score.py) -
-// every rally that isn't covered by any defined game (scoring not
-// configured, or a rally outside the tracked games) falls into a single
+// every rally that isn't covered by any defined set (scoring not
+// configured, or a rally outside the tracked sets) falls into a single
 // null-keyed bucket, rendered with no header at all.
-function groupByGame(rallies: Rally[], games: Game[]): { game: Game | null; rallies: Rally[] }[] {
-  if (games.length === 0) {
-    return [{ game: null, rallies }];
+function groupBySet(rallies: Rally[], sets: VolleySet[]): { set: VolleySet | null; rallies: Rally[] }[] {
+  if (sets.length === 0) {
+    return [{ set: null, rallies }];
   }
 
-  const sortedGames = [...games].sort((a, b) => a.game_index - b.game_index);
-  const groups: { game: Game | null; rallies: Rally[] }[] = sortedGames.map((game) => ({ game, rallies: [] }));
+  const sortedSets = [...sets].sort((a, b) => a.set_index - b.set_index);
+  const groups: { set: VolleySet | null; rallies: Rally[] }[] = sortedSets.map((set) => ({ set, rallies: [] }));
   const ungrouped: Rally[] = [];
 
   for (const rally of rallies) {
-    const game = sortedGames.find(
-      (g) => rally.rally_index >= g.start_rally_index && rally.rally_index <= g.end_rally_index,
+    const set = sortedSets.find(
+      (s) => rally.rally_index >= s.start_rally_index && rally.rally_index <= s.end_rally_index,
     );
-    if (game) {
-      groups.find((g) => g.game === game)!.rallies.push(rally);
+    if (set) {
+      groups.find((g) => g.set === set)!.rallies.push(rally);
     } else {
       ungrouped.push(rally);
     }
   }
 
-  if (ungrouped.length > 0) groups.push({ game: null, rallies: ungrouped });
+  if (ungrouped.length > 0) groups.push({ set: null, rallies: ungrouped });
   return groups.filter((g) => g.rallies.length > 0);
 }
 
@@ -205,12 +206,12 @@ export function RalliesTab({ jobId, rallies, flatEvents, currentTime, onSeek, on
   // from requestAnimationFrame so PlayerTrackingOverlay's box-gliding reads
   // smoothly - see its own doc comment), and this component re-renders on
   // every one of those ticks purely to refresh which rally's card is
-  // highlighted. Regrouping every rally by game, and - previously -
+  // highlighted. Regrouping every rally by set, and - previously -
   // re-filtering the entire flatEvents array and re-resolving each rally's
   // winner from scratch, on every single one of those ticks is what made
   // this tab feel slow: none of that actually depends on currentTime, so
   // it's memoized here instead of recomputed per frame.
-  const groups = useMemo(() => groupByGame(rallies, score?.result?.games ?? []), [rallies, score]);
+  const groups = useMemo(() => groupBySet(rallies, score?.result?.sets ?? []), [rallies, score]);
 
   const eventsByRally = useMemo(() => {
     const map = new Map<number, FlatEvent[]>();
@@ -235,9 +236,9 @@ export function RalliesTab({ jobId, rallies, flatEvents, currentTime, onSeek, on
     return <Typography color="text.secondary">No rallies were detected in this video.</Typography>;
   }
 
-  const showGameHeaders = groups.length > 1 || groups[0]?.game !== null;
+  const showSetHeaders = groups.length > 1 || groups[0]?.set !== null;
 
-  if (!showGameHeaders) {
+  if (!showSetHeaders) {
     return (
       <Stack spacing={1.5}>
         {groups[0].rallies.map((rally) => (
@@ -257,11 +258,11 @@ export function RalliesTab({ jobId, rallies, flatEvents, currentTime, onSeek, on
 
   return (
     <Stack spacing={1.5}>
-      {groups.map(({ game, rallies: groupRallies }) => (
-        <Accordion key={game?.game_index ?? "ungrouped"} defaultExpanded disableGutters>
+      {groups.map(({ set, rallies: groupRallies }) => (
+        <Accordion key={set?.set_index ?? "ungrouped"} defaultExpanded disableGutters>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
             <Typography variant="subtitle2" color="text.secondary">
-              {game ? `Game ${game.game_index + 1}` : "Other rallies"} ({groupRallies.length})
+              {set ? `Set ${set.set_index + 1}` : "Other rallies"} ({groupRallies.length})
             </Typography>
           </AccordionSummary>
           <AccordionDetails>

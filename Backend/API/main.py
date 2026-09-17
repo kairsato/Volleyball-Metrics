@@ -5,7 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from . import auth, config, network, score, share
+from . import auth, config, network
+from .services import score, share
 
 # How often the background watcher re-checks whether Share's 7-day window
 # has expired - see _watch_share_expiry. Short enough that an unattended
@@ -14,6 +15,7 @@ SHARE_EXPIRY_CHECK_INTERVAL_S = 600
 from .routers import (
     auth_router,
     calibration_router,
+    configuration_router,
     jobs_router,
     player_stats_router,
     players_router,
@@ -34,7 +36,7 @@ AUTH_PUBLIC_PATHS = {"/api/health", "/api/auth/status", "/api/auth/captcha", "/a
 # Share turning the rest of the app on for internet visitors was never
 # meant to also hand them the controls for Share itself (or the ability to
 # change the login password out from under the owner). See network.py.
-LAN_ONLY_PATH_PREFIXES = ("/api/share",)
+LAN_ONLY_PATH_PREFIXES = ("/api/share", "/api/configuration")
 LAN_ONLY_PATHS = {"/api/auth/set-password", "/api/auth/enable", "/api/auth/generate-password"}
 
 
@@ -128,6 +130,7 @@ app.include_router(score_router.router)
 app.include_router(warmup_router.router)
 app.include_router(auth_router.router)
 app.include_router(share_router.router)
+app.include_router(configuration_router.router)
 
 
 @app.on_event("startup")

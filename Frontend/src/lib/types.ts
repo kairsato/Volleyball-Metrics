@@ -55,6 +55,10 @@ export interface Job {
   needs_player_id: boolean;
   needs_scoring_review: boolean;
   winner_team_name: string | null;
+  // The other registered team's name - null unless scoring is configured
+  // with two named teams and a winner has been determined. See
+  // Backend/API/score.py's compute_summary.
+  loser_team_name: string | null;
   // Whether a warmup period is confirmed for this video - when true,
   // warmup_start_s/warmup_end_s are the resolved absolute-video-time
   // bounds the player, thumbnails, and every rally/stat below already
@@ -91,10 +95,27 @@ export interface CandidateMatch {
   confidence: number;
 }
 
+// Detections the appearance model thinks are all the same person, joined
+// up from the pairs above so the review UI can offer them as one "name all
+// of these" unit - see API/services/players.build_candidate_groups.
+export interface CandidateGroup {
+  stable_ids: number[];
+  // The weakest link holding the group together, not the strongest.
+  confidence: number;
+  // Set when some member is already named, which makes that name the
+  // obvious answer for the rest of the group.
+  suggested_name: string | null;
+}
+
 export interface PlayersListOut {
   job_id: string;
   players: Player[];
   candidate_matches: CandidateMatch[];
+  candidate_groups: CandidateGroup[];
+  // True while the identities are pre-calibration placeholders - the court
+  // has to be calibrated before players can be worked out or named at all.
+  // See API/services/players.identification_is_provisional.
+  provisional: boolean;
   // Whether the user has explicitly signed off on this video's player
   // identification - same pattern as ScoreConfig.confirmed.
   confirmed: boolean;
@@ -129,6 +150,12 @@ export interface PlayerEvent {
   // Gap since the previous touch in the same rally (seconds) - null for a
   // rally's first recorded touch.
   time_since_prev_touch_s: number | null;
+  // Whether contact refinement (ActionDetection.contactRefinement) replaced
+  // this touch's raw detected-frame contact point/speeds with a sub-frame,
+  // ball-flight-arc estimate validated against the attributed player's own
+  // tracked position - false means the fields above come from the older,
+  // less accurate raw-frame method.
+  contact_refined: boolean;
 }
 
 export interface PlayerStat {
@@ -205,6 +232,26 @@ export interface Rally {
   start_time_s: number;
   end_time_s: number;
   duration_s: number;
+}
+
+// GameStatusDetection's own raw no-play/play/service call for one
+// contiguous stretch - see Backend/API/routers/results_router.
+// get_game_status. Distinct from Rally above: a rally almost always
+// contains a "service" segment followed by a "play" one, which Rally's own
+// single start/end can't represent.
+export interface GameStatusSegment {
+  state: "no-play" | "play" | "service";
+  start_time_s: number;
+  end_time_s: number;
+}
+
+export interface GameStatusOut {
+  job_id: string;
+  segments: GameStatusSegment[];
+  // RAW (not warmup-rebased) rally windows - same basis the Debug review
+  // page's rally editor writes back via api.overrideRallies. See
+  // Backend/API/routers/results_router.get_game_status's own doc comment.
+  rallies: Rally[];
 }
 
 export interface ResultsOut {
@@ -376,6 +423,15 @@ export interface ScoreConfig {
   // Only meaningful for method "ocr" - flips which geometric side the
   // left-read digit is treated as belonging to.
   cv_reverse_direction: boolean;
+  // Only meaningful for method "automatic" - flips which geometric side
+  // (court x < 9m vs >= 9m) the ball-tracking serving-side heuristic treats
+  // as "A" vs "B".
+  invert_side: boolean;
+  // Also "automatic"-only, on by default: fills in any set whose own
+  // tracked-player data couldn't resolve which named team is on which
+  // side, by assuming sides simply alternate each set from the nearest set
+  // that did resolve.
+  match_alternating_sides: boolean;
   // Minimum OCR confidence (0-1) a digit-run detection needs before it
   // counts at all - a detection below this is treated the same as that
   // side not having been read, rather than trusting a low-confidence
@@ -390,8 +446,8 @@ export interface ScoreConfig {
   confirmed: boolean;
 }
 
-export interface Game {
-  game_index: number;
+export interface Set {
+  set_index: number;
   start_rally_index: number;
   end_rally_index: number;
 }
@@ -401,7 +457,7 @@ export interface Game {
 // "A"/"B" split above.
 export interface RallyWinner {
   rally_index: number;
-  game_index: number;
+  set_index: number;
   winner: "x" | "y" | null;
   confidence: "auto" | "manual" | "uncertain";
   // The raw digits the Computer Vision method actually read for this
@@ -412,7 +468,7 @@ export interface RallyWinner {
 }
 
 export interface ScoreResult {
-  games: Game[];
+  sets: Set[];
   rallies: RallyWinner[];
 }
 
@@ -479,13 +535,33 @@ export interface ActionQualityOut {
   receive: ActionQualityCategory;
   set: ActionQualityCategory;
   spike: ActionQualityCategory;
+  block: ActionQualityCategory;
   caveats: string[];
+}
+
+export interface PlayerQualityMatch {
+  job_id: string;
+  original_filename: string;
+  average_score: number;
+  count: number;
+}
+
+export interface PlayerQualityCategory {
+  average_score: number | null;
+  // Median of this player's own per-match average_score in this category -
+  // the baseline each match entry is colored against.
+  median_score: number | null;
+  count: number;
+  matches: PlayerQualityMatch[];
 }
 
 export interface QualitiesOut {
   // "original" (the untouched uploaded file) is always first, followed by
-  // whichever downscaled renditions actually got generated for this job.
+  // whichever of "1080p"/"720p"/"480p" actually got generated for this job
+  // (highest to lowest).
   qualities: string[];
+  // Display label for the "original" entry, e.g. "Original (1920x1080, 42 Mbps)".
+  original_label: string;
 }
 
 export interface TeamPlayerSummary {
@@ -494,38 +570,79 @@ export interface TeamPlayerSummary {
   hits_by_type: Record<string, number>;
 }
 
-export interface TeamVideoSummary {
+export interface TeamGameSummary {
   job_id: string;
   original_filename: string;
-  game_wins: number;
-  game_losses: number;
+  set_wins: number;
+  set_losses: number;
 }
 
 export interface TeamStatsOut {
   team_id: string;
   team_name: string;
-  // Every complete video with a roster member named in it contributes to
+  // Every complete game with a roster member named in it contributes to
   // total_hits/hits_by_type/players below, scored or not.
-  videos_total: number;
-  // Only videos where Scoring was configured with this team as team_x/
+  games_total: number;
+  // Only games where Scoring was configured with this team as team_x/
   // team_y contribute to the win/loss records and radar below - see
   // TeamStatsPage's own caveat text for why.
-  videos_with_scoring: number;
+  games_with_scoring: number;
   match_wins: number;
   match_losses: number;
-  game_wins: number;
-  game_losses: number;
+  set_wins: number;
+  set_losses: number;
   radar: RadarPoint[];
   total_hits: number;
   hits_by_type: Record<string, number>;
   players: TeamPlayerSummary[];
-  videos: TeamVideoSummary[];
+  games: TeamGameSummary[];
 }
 
-export interface PlayerRadarOut {
+// One game's contribution to a player's cross-game profile - see
+// PlayerProfileOut below. team_id/team_name/result are null when this
+// player isn't resolvable onto either of this game's two configured teams,
+// or the game has no determinable winner yet.
+export interface PlayerGame {
+  job_id: string;
+  original_filename: string;
+  date_played: string | null;
+  total_hits: number;
+  rallies_participated: number;
+  rally_ending_touches: number;
+  hits_by_type: Record<string, number>;
+  team_id: string | null;
+  team_name: string | null;
+  result: "win" | "loss" | null;
+}
+
+// Everything PlayerStatsPage needs for one player, rolled up across every
+// complete game - served pre-computed from Backend/API/player_profiles.py's
+// persisted store (see that module's docstring), not aggregated client-side.
+export interface PlayerProfile {
   name: string;
-  videos_with_data: number;
+  thumbnail_base64: string | null;
+  total_hits: number;
+  rallies_participated: number;
+  rally_ending_touches: number;
+  hits_by_type: Record<string, number>;
+  games: PlayerGame[];
   radar: RadarPoint[];
+  games_with_radar_data: number;
+  quality_categories: Record<string, PlayerQualityCategory>;
+}
+
+// The lightweight slice PlayersPage's grid needs - no per-game breakdown,
+// radar, or quality.
+export interface PlayerProfileSummary {
+  name: string;
+  thumbnail_base64: string | null;
+  total_hits: number;
+  rallies_participated: number;
+  game_count: number;
+}
+
+export interface PlayerProfilesOut {
+  players: PlayerProfileSummary[];
 }
 
 export interface AuthStatus {
@@ -572,4 +689,59 @@ export interface ShareStatus {
   ports: PortStatus[];
   share_url: string;
   last_error: string | null;
+}
+
+// --- Configuration page (gear menu -> Configuration) -----------------
+// Backend/API/services/heuristics.py is the source of truth for all of
+// this - the registry below is static metadata describing every stage's
+// tunable heuristics, while profiles carry the actual (editable) values.
+
+export type HeuristicParamType = "float" | "int" | "enum";
+
+export interface HeuristicParam {
+  // "DICT_NAME.subkey" for a param overriding one entry of a module-level
+  // dict constant, a plain module attribute name otherwise - opaque to the
+  // frontend either way, just the identifier round-tripped back on save.
+  key: string;
+  label: string;
+  description: string;
+  type: HeuristicParamType;
+  default: number | string;
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  options: string[] | null;
+  // Sub-heading to cluster related params under within a stage - null when
+  // a stage's params don't need sub-grouping.
+  group: string | null;
+}
+
+export interface HeuristicStage {
+  // Matches Frontend/src/lib/stages.ts's STAGE_LABELS keys exactly (see
+  // PHASE_ONE_STAGES/PHASE_TWO_STAGES) - the Configuration page's flowchart
+  // reuses those same stage keys/labels so it lines up with a job's own
+  // progress view.
+  key: string;
+  label: string;
+  phase: "preprocessing" | "postprocessing";
+  summary: string;
+  params: HeuristicParam[];
+}
+
+export interface HeuristicsRegistry {
+  stages: HeuristicStage[];
+}
+
+export type HeuristicValues = Record<string, Record<string, number | string>>;
+
+export interface HeuristicProfile {
+  id: string;
+  name: string;
+  is_default: boolean;
+  values: HeuristicValues;
+}
+
+export interface HeuristicsState {
+  active_profile_id: string;
+  profiles: HeuristicProfile[];
 }

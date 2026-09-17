@@ -1,6 +1,6 @@
 import type { Point, PredictedCourtGeometry } from "./types";
 
-// Mirrors Backend/Analysis/CourtDefinition/court.py's
+// Mirrors Backend/Analysis/CourtDetection/court.py's
 // create_half_court_homography/predict_court_geometry - see that module's
 // diagram for the full layout. Reimplemented client-side (rather than
 // round-tripping to the backend on every drag) so the near baseline and

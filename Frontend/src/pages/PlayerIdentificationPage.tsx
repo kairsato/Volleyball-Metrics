@@ -2,9 +2,13 @@ import { useEffect, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Typography from "@mui/material/Typography";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
+import DialogTitle from "@mui/material/DialogTitle";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Job } from "../lib/types";
 import { UnidentifiedPlayersSection } from "../components/results/UnidentifiedPlayersSection";
@@ -30,11 +34,24 @@ interface PlayerIdentificationPageProps {
 export function PlayerIdentificationPage({ onJobUpdated }: PlayerIdentificationPageProps) {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const jobId = searchParams.get("job");
 
   const [job, setJob] = useState<Job | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Player identification isn't locked behind court calibration - the
+  // court boundary is itself only ever a heuristic best guess (the near
+  // baseline and both attack lines are worked out automatically from the
+  // points actually placed, see CalibrationPanel.tsx), so blocking one
+  // algorithmic step on another wouldn't have guaranteed accuracy anyway.
+  // This dialog is the softer version: a reminder that a wrong court
+  // definition would silently poison player positions, worth double-
+  // checking first. It only shows up when SetupTab's "Manually override"
+  // click sent it here via router state - not on every page load/refresh.
+  const [accuracyDialogOpen, setAccuracyDialogOpen] = useState(
+    () => Boolean((location.state as { showCourtAccuracyWarning?: boolean } | null)?.showCourtAccuracyWarning),
+  );
 
   useEffect(() => {
     if (!jobId) return;
@@ -56,38 +73,38 @@ export function PlayerIdentificationPage({ onJobUpdated }: PlayerIdentificationP
     onJobUpdated(updated);
   }
 
+  // One server-side call rather than the read-clear-unconfirm-finalize
+  // sequence this used to drive from here. That sequence could only clear
+  // what was already on screen, left a half-reset behind if the tab was
+  // closed part-way, and - because it finished with finalize - reprocessed
+  // stats and video over the OLD identities instead of working them out
+  // again. See jobs_router.reset_players for what the reset now re-runs and
+  // why the court is central to it. It clears the "confirmed" sign-off
+  // too, which would otherwise leave the Setup tab reading "Done" with
+  // nobody named.
   async function handleRedoPlayers() {
     if (!jobId) return;
     setActionError(null);
     try {
-      const players = await api.getPlayers(jobId);
-      const clearNames = Object.fromEntries(
-        players.players.filter((p) => p.name).map((p) => [String(p.stable_id), ""]),
-      );
-      await api.updateNames(jobId, clearNames, []);
-      // Everyone's back to unidentified - any earlier "confirmed" sign-off
-      // no longer reflects reality, so it has to be cleared too, or the
-      // Setup tab would keep showing "Done" with nobody actually named.
-      await api.setPlayersConfirmed(jobId, false);
-      onJobUpdated(await api.finalizeJob(jobId));
-      navigate(`/video?job=${jobId}`);
+      onJobUpdated(await api.resetPlayers(jobId));
+      navigate(`/game?job=${jobId}`);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
   }
 
-  if (!jobId) return <Navigate to="/videos" replace />;
+  if (!jobId) return <Navigate to="/games" replace />;
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
   if (!job) return <ToolPageSkeleton />;
 
   if (job.status !== "complete") {
     return (
       <Box sx={{ maxWidth: 560 }}>
-        <Typography color="text.secondary" sx={{ mb: 2 }}>
+        <Alert severity="warning" sx={{ mb: 2 }}>
           This video hasn't finished processing yet, so player identification isn't available.
-        </Typography>
-        <Button variant="contained" onClick={() => navigate(`/video?job=${jobId}`)}>
-          Back to video
+        </Alert>
+        <Button variant="contained" onClick={() => navigate(`/game?job=${jobId}`)}>
+          Back to game
         </Button>
       </Box>
     );
@@ -98,7 +115,7 @@ export function PlayerIdentificationPage({ onJobUpdated }: PlayerIdentificationP
       <Button
         size="small"
         startIcon={<ArrowBackIcon />}
-        onClick={() => navigate(`/video?job=${jobId}&tab=setup`)}
+        onClick={() => navigate(`/game?job=${jobId}&tab=setup`)}
         sx={{ alignSelf: "flex-start", mb: 2, flexShrink: 0 }}
       >
         Back to results
@@ -113,6 +130,22 @@ export function PlayerIdentificationPage({ onJobUpdated }: PlayerIdentificationP
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <UnidentifiedPlayersSection job={job} onJobUpdated={handleJobUpdated} onRedoPlayers={handleRedoPlayers} />
       </Box>
+
+      <Dialog open={accuracyDialogOpen} onClose={() => setAccuracyDialogOpen(false)}>
+        <DialogTitle>Is the court definition accurate?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Player positions here are calculated from the court boundary set in Court Calibration.
+            If a player's position looks wrong, check calibration first - that's usually the cause.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => navigate(`/game/setup/court-calibration?job=${jobId}`)}>Review calibration</Button>
+          <Button variant="contained" onClick={() => setAccuracyDialogOpen(false)}>
+            Looks right, continue
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

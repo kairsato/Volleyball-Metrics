@@ -10,7 +10,7 @@ import Tabs from "@mui/material/Tabs";
 import Typography from "@mui/material/Typography";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import { api } from "../lib/api";
-import type { BallTrajectory, Job, PlayerTrajectory, ResultsOut, ScoreOut, TeamEntry } from "../lib/types";
+import type { BallTrajectory, GameStatusSegment, Job, PlayerTrajectory, ResultsOut, ScoreOut, TeamEntry } from "../lib/types";
 import { ActionsTab } from "./results/ActionsTab";
 import { AnalyticsTab } from "./results/AnalyticsTab";
 import { RalliesTab } from "./results/RalliesTab";
@@ -78,6 +78,7 @@ export function ResultsView({ job }: ResultsViewProps) {
   const [playerTrajectory, setPlayerTrajectory] = useState<PlayerTrajectory | null>(null);
   const [score, setScore] = useState<ScoreOut | null>(null);
   const [teams, setTeams] = useState<TeamEntry[]>([]);
+  const [gameStatusSegments, setGameStatusSegments] = useState<GameStatusSegment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState(() => readTabFromUrl());
   const [actionFilterPreset, setActionFilterPreset] = useState<ActionFilterPreset | null>(null);
@@ -121,13 +122,16 @@ export function ResultsView({ job }: ResultsViewProps) {
   const [currentTime, setCurrentTime] = useState(0);
 
   const [qualities, setQualities] = useState<string[]>(["original"]);
+  const [originalLabel, setOriginalLabel] = useState("Original");
   // Defaults to "original" until getQualities resolves below, then jumps to
-  // the best actually-transcoded rendition if one exists - streaming a raw
-  // upload (potentially a multi-GB, high-bitrate phone recording) for a
-  // whole video's worth of playback is what a browser tab running out of
-  // memory during long playback traced back to. "original" only stays the
-  // real default for a job with no renditions yet (still processing, or
-  // predates the transcoding stage entirely) - see transcode.py.
+  // the lowest-resolution actually-transcoded rendition if one exists -
+  // streaming a raw upload (potentially a multi-GB, high-bitrate phone
+  // recording) for a whole video's worth of playback is what a browser tab
+  // running out of memory during long playback traced back to, and what made
+  // this page
+  // feel slow to even start playing. "original" only stays the real default
+  // for a job with no renditions yet (still processing, or predates the
+  // transcoding stage entirely) - see transcode.py.
   const [quality, setQuality] = useState("original");
 
   useEffect(() => {
@@ -137,18 +141,22 @@ export function ResultsView({ job }: ResultsViewProps) {
       .then((res) => {
         if (cancelled) return;
         setQualities(res.qualities);
+        setOriginalLabel(res.original_label);
         // getQualities always returns ["original", ...generated], with
-        // generated in TRANSCODE_TIERS' own highest-to-lowest order - so
-        // index 1, if present, is the best available transcoded tier.
-        // Only auto-switches to it while still sitting at the very start
-        // (the common case - this resolves quickly, well before playback
-        // normally begins): swapping `src` this way skips VideoPlayer's own
-        // handleQualityChange, which is what actually preserves playback
-        // position/state across a quality change, so doing this once
-        // someone's already mid-playback would silently reset them to 0:00.
+        // `generated` in TRANSCODE_TIERS' own highest-to-lowest downscaled
+        // order - so the LAST entry, whenever more than just "original"
+        // exists, is the smallest/lowest-res rendition actually generated
+        // for this job, and the fastest one to start playing. Only
+        // auto-switches while still sitting at the very
+        // start (the common case - this resolves quickly, well before
+        // playback normally begins): swapping `src` this way skips
+        // VideoPlayer's own handleQualityChange, which is what actually
+        // preserves playback position/state across a quality change, so
+        // doing this once someone's already mid-playback would silently
+        // reset them to 0:00.
         const el = videoRef.current;
         const stillAtStart = !el || (el.paused && el.currentTime === 0);
-        if (stillAtStart && res.qualities.length > 1) setQuality(res.qualities[1]);
+        if (stillAtStart && res.qualities.length > 1) setQuality(res.qualities[res.qualities.length - 1]);
       })
       .catch(() => undefined);
     return () => {
@@ -182,7 +190,7 @@ export function ResultsView({ job }: ResultsViewProps) {
       .catch(() => undefined);
 
     // Same best-effort reasoning as ballTrajectory above, for the other
-    // three Annotations.
+    // four Annotations.
     api
       .getPlayerTrajectory(job.id)
       .then((res) => !cancelled && setPlayerTrajectory(res))
@@ -194,6 +202,10 @@ export function ResultsView({ job }: ResultsViewProps) {
     api
       .getTeams()
       .then((res) => !cancelled && setTeams(res.teams))
+      .catch(() => undefined);
+    api
+      .getGameStatus(job.id)
+      .then((res) => !cancelled && setGameStatusSegments(res.segments))
       .catch(() => undefined);
 
     return () => {
@@ -234,8 +246,8 @@ export function ResultsView({ job }: ResultsViewProps) {
   }, [playlist, warmupStartS, warmupEndS]);
 
   // Drives the number badge on the Setup tab below - the same
-  // needs_player_id/needs_scoring_review flags the video grid uses for its
-  // own "Setup needed" chip (see VideoGrid.tsx), computed server-side so
+  // needs_player_id/needs_scoring_review flags the game grid uses for its
+  // own "Setup needed" chip (see GameGrid.tsx), computed server-side so
   // this doesn't need its own fetch just to count unnamed players.
   const setupAttentionCount = (job.needs_player_id ? 1 : 0) + (job.needs_scoring_review ? 1 : 0);
 
@@ -291,17 +303,17 @@ export function ResultsView({ job }: ResultsViewProps) {
     return (
       <Box
         sx={{
-          height: { xs: "auto", sm: PAGE_CONTENT_HEIGHT },
+          height: { xs: "auto", md: PAGE_CONTENT_HEIGHT },
           display: "flex",
-          flexDirection: { xs: "column", sm: "row" },
+          flexDirection: { xs: "column", md: "row" },
           gap: 3,
-          overflow: { xs: "visible", sm: "hidden" },
+          overflow: { xs: "visible", md: "hidden" },
         }}
       >
-        <Box sx={{ flex: { xs: "0 0 auto", sm: "5 1 760px" }, minWidth: { xs: 0, sm: 520 } }}>
-          <Skeleton variant="rounded" sx={{ width: "100%", aspectRatio: "16 / 9", height: { xs: "auto", sm: "100%" } }} />
+        <Box sx={{ flex: { xs: "0 0 auto", md: "3 1 600px", lg: "5 1 760px" }, minWidth: { xs: 0, md: 420, lg: 520 } }}>
+          <Skeleton variant="rounded" sx={{ width: "100%", aspectRatio: "16 / 9", height: { xs: "auto", md: "100%" } }} />
         </Box>
-        <Box sx={{ flex: { xs: "1 1 auto", sm: "2 1 380px" }, minWidth: { xs: 0, sm: 340 } }}>
+        <Box sx={{ flex: { xs: "1 1 auto", md: "2 1 340px", lg: "2 1 380px" }, minWidth: { xs: 0, md: 300, lg: 340 } }}>
           <Stack direction="row" spacing={3} sx={{ mb: 2, pb: 1.5, borderBottom: 1, borderColor: "divider" }}>
             {["Stats", "Analytics", "Rallies", "Actions", "Setup"].map((label) => (
               <Skeleton key={label} variant="text" width={50} height={28} />
@@ -317,10 +329,10 @@ export function ResultsView({ job }: ResultsViewProps) {
   return (
     <Box
       sx={{
-        height: { xs: "auto", sm: PAGE_CONTENT_HEIGHT },
+        height: { xs: "auto", md: PAGE_CONTENT_HEIGHT },
         display: "flex",
         flexDirection: "column",
-        overflow: { xs: "visible", sm: "hidden" },
+        overflow: { xs: "visible", md: "hidden" },
       }}
     >
       <Box
@@ -328,15 +340,15 @@ export function ResultsView({ job }: ResultsViewProps) {
           flex: 1,
           minHeight: 0,
           display: "flex",
-          flexDirection: { xs: "column", sm: "row" },
+          flexDirection: { xs: "column", md: "row" },
           gap: 3,
-          overflow: { xs: "visible", sm: "hidden" },
+          overflow: { xs: "visible", md: "hidden" },
         }}
       >
         <Box
           sx={{
-            flex: { xs: "0 0 auto", sm: "5 1 760px" },
-            minWidth: { xs: 0, sm: 520 },
+            flex: { xs: "0 0 auto", md: "3 1 600px", lg: "5 1 760px" },
+            minWidth: { xs: 0, md: 420, lg: 520 },
             minHeight: 0,
             display: "flex",
             flexDirection: "column",
@@ -346,9 +358,9 @@ export function ResultsView({ job }: ResultsViewProps) {
           <Box
             sx={{
               position: "relative",
-              flex: { xs: "0 0 auto", sm: 1 },
+              flex: { xs: "0 0 auto", md: 1 },
               minHeight: 0,
-              aspectRatio: { xs: "16 / 9", sm: "auto" },
+              aspectRatio: { xs: "16 / 9", md: "auto" },
             }}
           >
             <VideoPlayer
@@ -360,6 +372,7 @@ export function ResultsView({ job }: ResultsViewProps) {
               qualities={qualities}
               quality={quality}
               onQualityChange={setQuality}
+              originalQualityLabel={originalLabel}
               ballTrajectory={ballTrajectory?.points}
               courtLengthM={ballTrajectory?.court_length_m}
               courtWidthM={ballTrajectory?.court_width_m}
@@ -369,7 +382,8 @@ export function ResultsView({ job }: ResultsViewProps) {
               playerTrajectory={playerTrajectory?.frames}
               rallies={results.rallies}
               scoreRallies={score?.result?.rallies}
-              games={score?.result?.games}
+              gameStatusSegments={gameStatusSegments}
+              sets={score?.result?.sets}
               teamXName={teamXName}
               teamYName={teamYName}
               enableArrowKeySeek
@@ -390,11 +404,12 @@ export function ResultsView({ job }: ResultsViewProps) {
 
         <Box
           sx={{
-            flex: { xs: "1 1 auto", sm: "2 1 380px" },
-            minWidth: { xs: 0, sm: 340 },
+            flex: { xs: "1 1 auto", md: "2 1 340px", lg: "2 1 380px" },
+            minWidth: { xs: 0, md: 300, lg: 340 },
             minHeight: 0,
-            overflowY: { xs: "visible", sm: "auto" },
-            pr: { xs: 0, sm: 0.5 },
+            display: "flex",
+            flexDirection: "column",
+            overflow: { xs: "visible", md: "hidden" },
           }}
         >
           <Stack
@@ -404,8 +419,15 @@ export function ResultsView({ job }: ResultsViewProps) {
               mb: 2,
               borderBottom: 1,
               borderColor: "divider",
-              position: "sticky",
-              top: { xs: APP_BAR_HEIGHT_PX, sm: 0 },
+              flexShrink: 0,
+              // Only needs to stick on mobile, where this column doesn't
+              // scroll on its own (overflow: visible above) and the whole
+              // page scrolls instead - pins the tab bar under the app bar
+              // as that happens. On desktop it's already a fixed sibling
+              // above the scrollable content box below, sitting outside
+              // that box's own scrollbar rather than sharing it.
+              position: { xs: "sticky", md: "static" },
+              top: APP_BAR_HEIGHT_PX,
               bgcolor: "background.default",
               zIndex: 1,
             }}
@@ -425,31 +447,50 @@ export function ResultsView({ job }: ResultsViewProps) {
             </Tabs>
           </Stack>
 
-          {tab === 0 && (
-            <StatsTab jobId={job.id} results={results} flatEvents={flatEvents} onSeek={seekTo} onJumpToAction={jumpToAction} />
-          )}
-          {tab === 1 && <AnalyticsTab results={results} onSeek={seekTo} />}
-          {tab === 2 && (
-            <RalliesTab
-              jobId={job.id}
-              rallies={results.rallies}
-              flatEvents={flatEvents}
-              currentTime={currentTime}
-              onSeek={seekTo}
-              onPlayAll={playAll}
-            />
-          )}
-          {tab === 3 && (
-            <ActionsTab
-              results={results}
-              flatEvents={flatEvents}
-              currentTime={currentTime}
-              onSeek={seekTo}
-              onPlayAll={playAll}
-              presetFilter={actionFilterPreset}
-            />
-          )}
-          {tab === 4 && <SetupTab job={job} />}
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              // On mobile this column doesn't get a fixed height the way
+              // it does on desktop (the video above it is sized by its own
+              // aspect ratio, not a shared height budget), so without a cap
+              // here a tall tab (Stats' graphs, a long rally list) pushes
+              // the page tall enough that getting back to the tab bar means
+              // re-scrolling past the video every time. Bounding it and
+              // scrolling internally instead keeps the tab bar and video in
+              // reach without that round trip.
+              maxHeight: { xs: "60vh", md: "none" },
+              overflowY: "auto",
+              pr: { xs: 0, md: 0.5 },
+            }}
+          >
+            {tab === 0 && (
+              <StatsTab jobId={job.id} results={results} flatEvents={flatEvents} onSeek={seekTo} onJumpToAction={jumpToAction} />
+            )}
+            {tab === 1 && <AnalyticsTab results={results} onSeek={seekTo} />}
+            {tab === 2 && (
+              <RalliesTab
+                jobId={job.id}
+                rallies={results.rallies}
+                flatEvents={flatEvents}
+                currentTime={currentTime}
+                onSeek={seekTo}
+                onPlayAll={playAll}
+              />
+            )}
+            {tab === 3 && (
+              <ActionsTab
+                jobId={job.id}
+                results={results}
+                flatEvents={flatEvents}
+                currentTime={currentTime}
+                onSeek={seekTo}
+                onPlayAll={playAll}
+                presetFilter={actionFilterPreset}
+              />
+            )}
+            {tab === 4 && <SetupTab job={job} />}
+          </Box>
         </Box>
       </Box>
     </Box>

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from .. import roster
+from ..services import roster
 from ..schemas import RosterAddIn, RosterOut
 
 router = APIRouter(prefix="/api/roster", tags=["roster"])

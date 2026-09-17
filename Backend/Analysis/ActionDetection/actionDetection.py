@@ -4,7 +4,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from CourtDefinition.court import COURT_LENGTH
+from ActionDetection.contactRefinement import refine_hits
+from CourtDetection.court import COURT_LENGTH
 
 BALL_SPEED_LOG_NAME = "ball_speed.json"
 PLAYER_POSITIONS_LOG_NAME = "player_positions.json"
@@ -65,20 +66,30 @@ FAST_INCOMING_SPEED_MS = 8.0
 # NOTE ON ACCURACY: hit TIMING and rough court position come from ball
 # trajectory alone and are trustworthy. Action TYPE is decided two ways:
 # "serve" is always the geometric/timing rule below (a rally's first touch
-# needs no classifier - see SERVE_WINDOW_SECONDS). Every other touch is
-# classified by a trained image classifier (see training/, and
-# MachineLearning/datasetGather.py's ActionDatasets for what it was
-# trained on) run on the
-# attributed player's crop at the hit frame, when a model checkpoint is
-# present at ACTION_CLASSIFIER_PATH and confident enough
-# (ACTION_CLASSIFIER_CONFIDENCE_THRESHOLD); the old rough geometric
-# heuristic (_classify below) is the fallback for whatever the classifier
-# can't confidently call, or for a checkout with no trained model at all.
-# "hit" is used whenever nothing above confidently applies.
+# needs no detector - see SERVE_WINDOW_SECONDS). Every other touch is looked
+# up in a trained object detector's own predictions on the FULL video frame
+# at the hit's frame_idx (see MachineLearning/datasetGather.py's
+# ActionDatasets for what it was trained on) - the detector sees the whole
+# scene (net, ball, other players), not just one player's crop, and
+# post-processing (_match_detection_to_player) picks whichever detected box
+# best overlaps the already-attributed player's own tracked box. That match
+# is trusted when a model checkpoint is present at ACTION_DETECTOR_PATH and
+# confident enough (ACTION_DETECTOR_CONFIDENCE_THRESHOLD); the old rough
+# geometric heuristic (_classify below) is the fallback for whatever the
+# detector can't confidently call, or for a checkout with no trained model
+# at all. "hit" is used whenever nothing above confidently applies.
 
-ACTION_CLASSIFIER_PATH = Path(__file__).parent / "action_classifier.pt"
-ACTION_CLASSIFIER_CONFIDENCE_THRESHOLD = 0.6
-ACTION_CLASSIFIER_IMAGE_SIZE = 224
+ACTION_DETECTOR_PATH = Path(__file__).parent / "action_detector.pt"
+# Loose threshold for the detector's own predict() call - cast a wide net
+# here; ACTION_DETECTOR_CONFIDENCE_THRESHOLD below does the real filtering
+# on whichever detection actually gets matched to the attributed player.
+ACTION_DETECTOR_COLLECTION_CONF = 0.25
+ACTION_DETECTOR_CONFIDENCE_THRESHOLD = 0.6
+ACTION_DETECTOR_IMGSZ = 640
+# How much a detected box must overlap the attributed player's own tracked
+# box (IoU) to count as "about that player" rather than some other player's
+# or a stray false positive elsewhere in the frame.
+ACTION_DETECTOR_MIN_IOU = 0.1
 
 
 def _velocity(entry_a, entry_b, fps):
@@ -290,77 +301,82 @@ def _classify(hit, prev_hit, rally, serve_window_frames):
     return "hit"
 
 
-_action_classifier_cache = {}
+_action_detector_cache = {}
 
 
-def _load_action_classifier():
-    """Lazily loads the trained spike/set/dig/block crop classifier (see
-    training/train.py) if a checkpoint exists at ACTION_CLASSIFIER_PATH -
-    returns None otherwise (including if torch/torchvision aren't
-    installed), so detectActions() keeps working heuristic-only exactly as
-    before on a checkout that hasn't trained one yet. Cached at module
-    level since detectActions() may run once per job but this should only
-    ever load the model weights once per process."""
-    if "model" in _action_classifier_cache:
-        return _action_classifier_cache["model"]
+def _load_action_detector():
+    """Lazily loads the trained full-frame spike/set/dig/block detector
+    (see MachineLearning/mainTrainingModels.py's train_action_detector) if a
+    checkpoint exists at ACTION_DETECTOR_PATH - returns None otherwise
+    (including if ultralytics isn't installed), so detectActions() keeps
+    working heuristic-only exactly as before on a checkout that hasn't
+    trained one yet. Cached at module level since detectActions() may run
+    once per job but this should only ever load the model weights once per
+    process."""
+    if "model" in _action_detector_cache:
+        return _action_detector_cache["model"]
 
     loaded = None
-    if ACTION_CLASSIFIER_PATH.exists():
+    if ACTION_DETECTOR_PATH.exists():
         try:
-            import torch
-            from torchvision import transforms
+            from ultralytics import YOLO
 
-            from .training.model import build_model
-
-            checkpoint = torch.load(ACTION_CLASSIFIER_PATH, map_location="cpu")
-            classes = checkpoint["classes"]
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-            model = build_model(
-                num_classes=len(classes),
-                architecture=checkpoint.get("architecture", "resnet50"),
-                pretrained=False,
-            )
-            model.load_state_dict(checkpoint["state_dict"])
-            model.to(device).eval()
-
-            transform = transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize((ACTION_CLASSIFIER_IMAGE_SIZE, ACTION_CLASSIFIER_IMAGE_SIZE)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-
-            loaded = {"model": model, "classes": classes, "device": device, "transform": transform}
+            loaded = YOLO(str(ACTION_DETECTOR_PATH))
         except Exception as exc:
-            print(f"Could not load action classifier at {ACTION_CLASSIFIER_PATH} ({exc}); "
+            print(f"Could not load action detector at {ACTION_DETECTOR_PATH} ({exc}); "
                   f"falling back to the geometric heuristic for every hit.")
 
-    _action_classifier_cache["model"] = loaded
+    _action_detector_cache["model"] = loaded
     return loaded
 
 
-def _crop_box(frame, box):
-    h, w = frame.shape[:2]
-    x1, y1, x2, y2 = (int(round(v)) for v in box)
-    x1, y1 = max(0, x1), max(0, y1)
-    x2, y2 = min(w, x2), min(h, y2)
-    if x2 <= x1 or y2 <= y1:
-        return None
-    return frame[y1:y2, x1:x2]
+def _detect_actions_in_frame(detector, frame):
+    """Runs the trained detector on one FULL BGR video frame (no cropping),
+    returning every detection above ACTION_DETECTOR_COLLECTION_CONF as
+    {"box": [x1,y1,x2,y2], "class_name": app_action_type, "conf": float}."""
+    result = detector.predict(
+        source=frame, conf=ACTION_DETECTOR_COLLECTION_CONF, imgsz=ACTION_DETECTOR_IMGSZ, verbose=False,
+    )[0]
+
+    detections = []
+    for box, conf, cls in zip(result.boxes.xyxy, result.boxes.conf, result.boxes.cls):
+        detections.append({
+            "box": [float(v) for v in box.tolist()],
+            "class_name": result.names[int(cls.item())],
+            "conf": float(conf.item()),
+        })
+    return detections
 
 
-def _classify_with_model(classifier, crop):
-    """Runs the trained classifier on one BGR player crop, returning
-    (predicted_app_action_type, confidence)."""
-    import torch
+def _iou(box_a, box_b):
+    """Standard box IoU - same formula as PlayerDetection/tracker.py's
+    calculate_iou, duplicated locally to keep this module self-contained."""
+    xa, ya = max(box_a[0], box_b[0]), max(box_a[1], box_b[1])
+    xb, yb = min(box_a[2], box_b[2]), min(box_a[3], box_b[3])
 
-    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-    tensor = classifier["transform"](rgb).unsqueeze(0).to(classifier["device"])
-    with torch.no_grad():
-        probs = torch.softmax(classifier["model"](tensor), dim=1)[0]
-    confidence, index = torch.max(probs, dim=0)
-    return classifier["classes"][index.item()], float(confidence.item())
+    inter_area = max(0, xb - xa) * max(0, yb - ya)
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    union = float(area_a + area_b - inter_area)
+
+    return (inter_area / union) if union > 0 else 0.0
+
+
+def _match_detection_to_player(detections, player_box):
+    """Post-processing step combining the detector's full-frame output with
+    the already-tracked player positions: picks whichever detected action
+    box overlaps the attributed player's own tracked box the most, and only
+    trusts it if that overlap clears ACTION_DETECTOR_MIN_IOU - a detection
+    of some other player, or a stray false positive elsewhere in the frame,
+    shouldn't get credited to this hit's player just because it was the
+    only one found."""
+    best, best_iou = None, 0.0
+    for detection in detections:
+        iou = _iou(detection["box"], player_box)
+        if iou > best_iou:
+            best, best_iou = detection, iou
+
+    return best if best_iou >= ACTION_DETECTOR_MIN_IOU else None
 
 
 def detectActions(video_path, output_path):
@@ -404,8 +420,18 @@ def detectActions(video_path, output_path):
 
     hits = _find_hits(ball_entries, fps)
 
-    classifier = _load_action_classifier()
-    crop_cap = cv2.VideoCapture(str(video_path)) if classifier is not None else None
+    # Best-effort sub-frame correction of each hit's contact time/position/
+    # speed, using the ball's own incoming/outgoing flight physics validated
+    # against the attributed player's tracked position - see
+    # contactRefinement.refine_hits. Hits it can't confidently improve come
+    # back unchanged, i.e. this file's own (less accurate) method above
+    # remains the fallback of last resort.
+    hits = refine_hits(hits, ball_entries, rallies, players_by_frame, fps, output_path, diagonal)
+    refined_count = sum(1 for h in hits if h.get("contact_refined"))
+    print(f"Contact refinement: {refined_count}/{len(hits)} hit(s) refined via flight-arc fitting.")
+
+    detector = _load_action_detector()
+    frame_cap = cv2.VideoCapture(str(video_path)) if detector is not None else None
 
     actions = []
     prev_hit_in_rally = {}
@@ -419,30 +445,45 @@ def detectActions(video_path, output_path):
 
             frame_players = _players_near_frame(players_by_frame, hit["frame_idx"]) or []
             player_id = _nearest_player(frame_players, hit["pixel"], hit["court"], diagonal)
+            player_box = (
+                next((p["box"] for p in frame_players if p["stable_id"] == player_id), None)
+                if player_id is not None else None
+            )
 
-            # Serve is always the timing rule, never the classifier - see
-            # the NOTE ON ACCURACY above. Everything else prefers the
-            # trained classifier's call on the attributed player's crop at
-            # the hit frame, falling back to the geometric heuristic when
-            # there's no player attribution, no classifier loaded, or the
-            # classifier itself isn't confident enough.
+            # Serve is always the timing rule, never the detector - see the
+            # NOTE ON ACCURACY above. Everything else prefers the trained
+            # detector's own full-frame predictions at the hit frame,
+            # post-processed (_match_detection_to_player) against the
+            # already-attributed player's tracked box, falling back to the
+            # geometric heuristic when there's no player attribution, no
+            # detector loaded, no matching detection, or the match isn't
+            # confident enough.
             is_serve = rally is not None and hit["frame_idx"] - rally["start_frame"] <= serve_window_frames
             action_type = "serve" if is_serve else None
             action_type_confidence = None
+            action_box = None
 
-            if action_type is None and classifier is not None and player_id is not None:
-                player_box = next((p["box"] for p in frame_players if p["stable_id"] == player_id), None)
-                if player_box is not None:
-                    crop_cap.set(cv2.CAP_PROP_POS_FRAMES, hit["frame_idx"])
-                    success, frame = crop_cap.read()
-                    crop = _crop_box(frame, player_box) if success else None
-                    if crop is not None:
-                        predicted, confidence = _classify_with_model(classifier, crop)
-                        if confidence >= ACTION_CLASSIFIER_CONFIDENCE_THRESHOLD:
-                            action_type, action_type_confidence = predicted, confidence
+            if action_type is None and detector is not None and player_box is not None:
+                frame_cap.set(cv2.CAP_PROP_POS_FRAMES, hit["frame_idx"])
+                success, frame = frame_cap.read()
+                detections = _detect_actions_in_frame(detector, frame) if success else []
+                matched = _match_detection_to_player(detections, player_box)
+                if matched is not None and matched["conf"] >= ACTION_DETECTOR_CONFIDENCE_THRESHOLD:
+                    action_type = matched["class_name"]
+                    action_type_confidence = matched["conf"]
+                    action_box = matched["box"]
 
             if action_type is None:
                 action_type = _classify(hit, prev_hit, rally, serve_window_frames)
+
+            # Every action with a player attribution gets SOME box to draw/
+            # link against player-identification boxes elsewhere, even when
+            # the detector path above didn't fire (no model, no confident
+            # match, or a serve/heuristic call): fall back to the attributed
+            # player's own tracked box at this frame (player_positions.json).
+            # Only an action with no player attribution at all stays boxless.
+            if action_box is None:
+                action_box = player_box
 
             prev_hit_in_rally[rally_index] = hit
 
@@ -456,15 +497,25 @@ def detectActions(video_path, output_path):
 
             actions.append({
                 "frame_idx": hit["frame_idx"],
-                "timestamp_s": hit["frame_idx"] / fps,
+                # A refined hit's own sub-frame timestamp when contact
+                # refinement succeeded (see contactRefinement.refine_hits),
+                # else the raw detected frame's timestamp as before.
+                "timestamp_s": hit.get("timestamp_s", hit["frame_idx"] / fps),
                 "rally_index": rally_index,
                 "player_stable_id": player_id,
                 "action_type": action_type,
-                # "classifier" or "heuristic" - which of the two paths in
-                # the NOTE ON ACCURACY above actually produced action_type
-                # for this hit; None for "classifier" means confidence
-                # wasn't measured (i.e. the heuristic path, or "serve").
+                # "detector" or "heuristic" - which of the two paths in the
+                # NOTE ON ACCURACY above actually produced action_type for
+                # this hit; None means the heuristic path (or "serve").
                 "action_type_confidence": action_type_confidence,
+                # Bounding box ([x1,y1,x2,y2], same convention as
+                # player["box"] in player_positions.json) for linking this
+                # action to a player-identification box: the trained
+                # detector's own matched box when that path fired (see
+                # action_type_confidence above), otherwise the attributed
+                # player's own tracked box at this frame as a fallback. Null
+                # only when player_stable_id itself is null.
+                "action_box": action_box,
                 "ball_pixel": hit["pixel"],
                 "ball_court": hit["court"],
                 "ball_height_m": hit["height_m"],
@@ -472,10 +523,16 @@ def detectActions(video_path, output_path):
                 "speed_out_m_per_s": hit["speed_out_ms_or_pxs"] if real_units else None,
                 "real_units": real_units,
                 "time_since_prev_touch_s": time_since_prev_touch_s,
+                # Whether contact refinement (see contactRefinement.
+                # refine_hits, called above) replaced this hit's raw
+                # detected-frame contact point/speeds with a sub-frame
+                # arc-fit estimate - False means every field above still
+                # comes from the original, less accurate method.
+                "contact_refined": hit.get("contact_refined", False),
             })
     finally:
-        if crop_cap is not None:
-            crop_cap.release()
+        if frame_cap is not None:
+            frame_cap.release()
 
     actions_file = Path(output_path) / ACTIONS_LOG_NAME
 

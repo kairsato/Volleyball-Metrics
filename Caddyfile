@@ -19,12 +19,20 @@
 # automatically before starting Caddy, so nobody's personal domain needs to
 # be hardcoded in this file or set by hand. A real hostname here gets a
 # real, automatically-renewing Let's Encrypt certificate for free - no `tls`
-# line needed, unlike the old bare-`:443`/`tls internal` setup this
-# replaced, so no browser warnings for anyone, not just this machine. www.
-# is included too - drop it if it doesn't resolve to the same IP for you.
+# line needed, so no browser warnings for anyone, not just this machine.
+# www. is included too - drop it if it doesn't resolve to the same IP for
+# you.
 #
-# Running this file directly (not via _run_proxy.bat) needs DEV_HOSTNAME set
-# yourself first, e.g. (PowerShell) $env:DEV_HOSTNAME = "example.duckdns.org"
+# Requires DEV_HOSTNAME to be a real, resolvable hostname - with it unset
+# (or if you run this file directly without setting it) the site address
+# collapses to the literal, invalid hostname "www." and Caddy fails to
+# start ("subject does not qualify for certificate"). _run_proxy.bat
+# detects that case itself and runs Caddyfile.local instead, which uses a
+# self-signed cert (the old bare-`:443`/`tls internal` setup this file
+# replaced) - see that file's own comment.
+#
+# Running this file directly needs DEV_HOSTNAME set yourself first, e.g.
+# (PowerShell) $env:DEV_HOSTNAME = "example.duckdns.org"
 #
 # Run: caddy run --config Caddyfile
 

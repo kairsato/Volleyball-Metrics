@@ -220,14 +220,67 @@ def classifyVideoChunks(video_path, progress_label="game status"):
     return fps, total_frames, smoothed_labels
 
 
+def _chunk_bounds(chunk_idx, fps, total_frames):
+    """A chunk's own [start_frame, end_frame] and [start_time_s, end_time_s]
+    - shared by the segment-building and rally-building passes below so
+    both derive frame/time bounds from a chunk index identically (see
+    classifyVideoChunks's own return-value doc comment for the mapping)."""
+    start_frame = chunk_idx * STRIDE_FRAMES
+    end_frame = min((chunk_idx + 1) * STRIDE_FRAMES, total_frames) - 1
+    return start_frame, end_frame, start_frame / fps, end_frame / fps
+
+
+def _build_segments(smoothed_labels, fps, total_frames):
+    """Every MAXIMAL run of consecutive same-label chunks, as its own
+    entry - the model's own three-way no-play/play/service call, cut only
+    where the label itself actually changes. Unlike rally_log below, this
+    applies no gap-bridging or minimum-duration filter of its own: it is
+    meant to show exactly what the (already majority-vote-smoothed, see
+    SMOOTHING_WINDOW_CHUNKS) classifier said, not a further-cleaned
+    derivative of it - a human reviewing the Game status annotation against
+    the actual footage is the right place to judge whether a given segment
+    is a real state or a lingering misclassification, the same way the
+    Player IDs (debug) annotation shows raw detections rather than a
+    cleaned-up version of them.
+
+    A single rally almost always contains at least two of these segments
+    (a "service" run at its start, then "play" for the rest of the
+    exchange) - that per-rally internal structure is exactly what rally_log
+    below cannot represent, since it only keeps each rally's own outer
+    start/end.
+    """
+    segments = []
+    for i, label in enumerate(smoothed_labels):
+        start_frame, end_frame, start_time_s, end_time_s = _chunk_bounds(i, fps, total_frames)
+        if segments and segments[-1]["state"] == label:
+            segments[-1]["end_frame"] = end_frame
+            segments[-1]["end_time_s"] = end_time_s
+        else:
+            segments.append({
+                "state": label,
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "start_time_s": start_time_s,
+                "end_time_s": end_time_s,
+            })
+    return segments
+
+
 def detectGameStatus(video_path, output_path):
     """
     Segments the video into rallies (ball actively in play) vs. dead-ball
     stretches: classifyVideoChunks() does the actual per-chunk
     classification, and "play"/"service" chunks within
     MAX_GAP_SECONDS_WITHIN_RALLY of each other are merged into one rally.
+
+    Also saves the finer-grained, unmerged no-play/play/service segments
+    themselves (see _build_segments) - rally_log below answers "when was
+    the ball live", segments answers "what was the model looking at right
+    now", and the two aren't redundant: a rally's own service/play split
+    only exists in the segments, not in rally_log's single start/end.
     """
     fps, total_frames, smoothed_labels = classifyVideoChunks(video_path)
+    segments = _build_segments(smoothed_labels, fps, total_frames)
 
     rally_log = []
     if smoothed_labels:
@@ -269,6 +322,7 @@ def detectGameStatus(video_path, output_path):
             "fps": fps,
             "total_frames": total_frames,
             "rallies": rally_log,
+            "segments": segments,
         }, f, indent=2)
 
     print(f"Detected {len(rally_log)} rally segment(s) via {MODEL_DIR.parent.name} game-state model.")

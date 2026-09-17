@@ -1,0 +1,4 @@
+Usage: uvicorn [OPTIONS] APP
+Try 'uvicorn --help' for help.
+
+Error: Got unexpected extra arguments (API/data\0a6e6e4b0da3 API/data\399152820483 API/data\472c96d203da API/data\5b205c4a9d69 API/data\7be61d953a7b API/data\907939dd3eab API/data\auth_config.json API/data\auth_sessions.json API/data\b27d075ac9f8 API/data\d347621783c0 API/data\d60ecdf417e6 API/data\e374c6296278 API/data\e3d3b0f98b5a API/data\fdc683e94194 API/data\player_gallery.json API/data\player_roster.json API/data\share_config.json API/data\team_roster.json)

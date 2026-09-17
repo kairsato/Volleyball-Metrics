@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from .. import team_roster, team_stats
+from ..services import team_roster, team_stats
 from ..schemas import TeamRosterOut, TeamSaveIn, TeamStatsOut
 
 router = APIRouter(prefix="/api/teams", tags=["teams"])

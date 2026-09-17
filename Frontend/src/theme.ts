@@ -51,6 +51,18 @@ export function createAppTheme(mode: PaletteMode) {
           },
         },
       },
+      // A native <input type="date">'s calendar icon is drawn in a fixed
+      // dark color by the browser, not the page's own text color - on the
+      // dark palette that leaves a near-black icon sitting on a near-black
+      // field, unreadable. Inverting it in dark mode only is what actually
+      // fixes that without also breaking the (already-fine) light mode icon.
+      MuiOutlinedInput: {
+        styleOverrides: {
+          root: isDark
+            ? { "& input[type='date']::-webkit-calendar-picker-indicator": { filter: "invert(1)" } }
+            : {},
+        },
+      },
     },
   });
 }

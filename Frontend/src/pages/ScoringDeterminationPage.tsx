@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
-import type { Job, Rally } from "../lib/types";
+import type { BallTrajectory, GameStatusSegment, Job, PlayerTrajectory, Rally } from "../lib/types";
 import { ScoreSection } from "../components/results/ScoreSection";
 import { ToolPageSkeleton } from "../components/Skeletons";
+import type { FlatEvent } from "../components/results/types";
 import { toBoundedAbsolute, VideoPlayer } from "../components/VideoPlayer";
 
 // Same viewport-fit approach as ResultsView.tsx/PlayerIdentificationPage.tsx
@@ -30,9 +30,31 @@ export function ScoringDeterminationPage() {
 
   const [job, setJob] = useState<Job | null>(null);
   const [rallies, setRallies] = useState<Rally[]>([]);
+  // Every player's touches, flattened the same way ResultsView's own
+  // flatEvents does - only needed here to derive hitTimestamps below (the
+  // Ball Trajectory annotation's flight-segment boundaries), so nothing
+  // else about them is kept.
+  const [flatEvents, setFlatEvents] = useState<FlatEvent[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Quality/annotations are a standard part of the player wherever the
+  // source video plays, not a Results-page special case - see VideoPlayer's
+  // own props for what each one needs. Deliberately never fetching/passing
+  // scoreRallies (see the VideoPlayer usage below, and rallies/setRallies
+  // above which feed ScoreSection instead): Score's whole point is showing
+  // a settled score, which is exactly what a reviewer is here to determine/
+  // correct, so surfacing a possibly-still-wrong computed one on top of
+  // that would fight the page's own purpose. Game Status is unaffected -
+  // it's driven by its own gameStatusSegments below, not rallies/
+  // scoreRallies, so it stays available here regardless.
+  const [qualities, setQualities] = useState<string[]>(["original"]);
+  const [originalLabel, setOriginalLabel] = useState("Original");
+  const [quality, setQuality] = useState("original");
+  const [ballTrajectory, setBallTrajectory] = useState<BallTrajectory | null>(null);
+  const [playerTrajectory, setPlayerTrajectory] = useState<PlayerTrajectory | null>(null);
+  const [gameStatusSegments, setGameStatusSegments] = useState<GameStatusSegment[]>([]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -47,12 +69,69 @@ export function ScoringDeterminationPage() {
     let cancelled = false;
     api
       .getResults(jobId)
-      .then((res) => !cancelled && setRallies(res.rallies))
+      .then((res) => {
+        if (cancelled) return;
+        setRallies(res.rallies);
+        const events: FlatEvent[] = [];
+        for (const [playerId, stat] of Object.entries(res.players)) {
+          for (const event of stat.events) {
+            events.push({ ...event, playerId, playerName: stat.name ?? `Player ${playerId}` });
+          }
+        }
+        setFlatEvents(events.sort((a, b) => a.frame_idx - b.frame_idx));
+      })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, [jobId]);
+
+  // Same shape as ResultsView's own quality-fetching effect - see its
+  // comment for why this auto-selects the lowest-res rendition rather than
+  // defaulting to streaming the original upload.
+  useEffect(() => {
+    if (!jobId) return;
+    let cancelled = false;
+    api
+      .getQualities(jobId)
+      .then((res) => {
+        if (cancelled) return;
+        setQualities(res.qualities);
+        setOriginalLabel(res.original_label);
+        const el = videoRef.current;
+        const stillAtStart = !el || (el.paused && el.currentTime === 0);
+        if (stillAtStart && res.qualities.length > 1) setQuality(res.qualities[res.qualities.length - 1]);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId]);
+
+  // Best-effort, same as ResultsView - a job with no ball/player tracking
+  // or game-status data yet just means those annotations don't appear, not
+  // an error for the whole page.
+  useEffect(() => {
+    if (!jobId) return;
+    let cancelled = false;
+    api
+      .getBallTrajectory(jobId)
+      .then((res) => !cancelled && setBallTrajectory(res))
+      .catch(() => undefined);
+    api
+      .getPlayerTrajectory(jobId)
+      .then((res) => !cancelled && setPlayerTrajectory(res))
+      .catch(() => undefined);
+    api
+      .getGameStatus(jobId)
+      .then((res) => !cancelled && setGameStatusSegments(res.segments))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId]);
+
+  const hitTimestamps = useMemo(() => flatEvents.map((e) => e.timestamp_s), [flatEvents]);
 
   useEffect(() => {
     document.title = job ? `${job.original_filename} · Scoring Determination` : "Scoring Determination";
@@ -78,18 +157,18 @@ export function ScoringDeterminationPage() {
     void el.play();
   }
 
-  if (!jobId) return <Navigate to="/videos" replace />;
+  if (!jobId) return <Navigate to="/games" replace />;
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
   if (!job) return <ToolPageSkeleton />;
 
   if (job.status !== "complete") {
     return (
       <Box sx={{ maxWidth: 560 }}>
-        <Typography color="text.secondary" sx={{ mb: 2 }}>
+        <Alert severity="warning" sx={{ mb: 2 }}>
           This video hasn't finished processing yet, so scoring isn't available.
-        </Typography>
-        <Button variant="contained" onClick={() => navigate(`/video?job=${jobId}`)}>
-          Back to video
+        </Alert>
+        <Button variant="contained" onClick={() => navigate(`/game?job=${jobId}`)}>
+          Back to game
         </Button>
       </Box>
     );
@@ -102,10 +181,22 @@ export function ScoringDeterminationPage() {
     <Box sx={{ height: "100%" }}>
       <VideoPlayer
         videoRef={videoRef}
-        src={api.sourceVideoUrl(jobId)}
+        src={api.sourceVideoUrl(jobId, quality)}
         boundStartS={warmupStartS}
         boundEndS={warmupEndS}
         onTimeUpdate={setCurrentTime}
+        qualities={qualities}
+        quality={quality}
+        onQualityChange={setQuality}
+        originalQualityLabel={originalLabel}
+        ballTrajectory={ballTrajectory?.points}
+        courtLengthM={ballTrajectory?.court_length_m}
+        courtWidthM={ballTrajectory?.court_width_m}
+        frameW={ballTrajectory?.frame_w ?? playerTrajectory?.frame_w}
+        frameH={ballTrajectory?.frame_h ?? playerTrajectory?.frame_h}
+        hitTimestamps={hitTimestamps}
+        playerTrajectory={playerTrajectory?.frames}
+        gameStatusSegments={gameStatusSegments}
       />
     </Box>
   );
@@ -115,7 +206,7 @@ export function ScoringDeterminationPage() {
       <Button
         size="small"
         startIcon={<ArrowBackIcon />}
-        onClick={() => navigate(`/video?job=${jobId}&tab=setup`)}
+        onClick={() => navigate(`/game?job=${jobId}&tab=setup`)}
         sx={{ alignSelf: "flex-start", mb: 2, flexShrink: 0 }}
       >
         Back to results

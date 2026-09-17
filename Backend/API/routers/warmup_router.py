@@ -3,7 +3,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from .. import calibration, config, warmup
+from .. import config
+from ..services import calibration, warmup
 from ..jobs import store
 from ..schemas import WarmupConfigIn, WarmupConfigOut, WarmupConfirmIn
 

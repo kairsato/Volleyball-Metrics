@@ -3,9 +3,10 @@ import shutil
 from datetime import date
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
 
-from .. import calibration, config, pipeline, players, score, video_metadata, warmup
+from .. import config
+from ..services import calibration, pipeline, player_profiles, players, score, video_metadata, warmup
 from ..jobs import (
     STATUS_AWAITING_PLAYER_REVIEW,
     STATUS_CANCELLED,
@@ -88,6 +89,7 @@ def _job_out(job: Job) -> JobOut:
     needs_player_id = False
     needs_scoring_review = False
     winner_team_name = None
+    loser_team_name = None
     warmup_confirmed = False
     warmup_start_s = None
     warmup_end_s = None
@@ -97,6 +99,7 @@ def _job_out(job: Job) -> JobOut:
         summary = score.compute_summary(output_path)
         needs_scoring_review = summary["needs_review"]
         winner_team_name = summary["winner_team_name"]
+        loser_team_name = summary["loser_team_name"]
 
         warmup_cfg = warmup.load_config(output_path)
         warmup_confirmed = warmup.is_active(warmup_cfg)
@@ -108,6 +111,7 @@ def _job_out(job: Job) -> JobOut:
         needs_player_id=needs_player_id,
         needs_scoring_review=needs_scoring_review,
         winner_team_name=winner_team_name,
+        loser_team_name=loser_team_name,
         warmup_confirmed=warmup_confirmed,
         warmup_start_s=warmup_start_s,
         warmup_end_s=warmup_end_s,
@@ -198,7 +202,8 @@ async def process_job(job_id: str):
     # processing Setup tab step like player identification and scoring, not
     # a gate on starting the pipeline at all. Player/ball tracking still use
     # court.json *while tracking runs* if it exists yet (see
-    # tracker_offline.py/ballDetection.py), but both fall back gracefully
+    # PlayerDetection/tracker.py's trackplayers_offline / ballDetection.py),
+    # but both fall back gracefully
     # (pixel-space positions/speeds, full-frame ball search) when it
     # doesn't - calibrating afterward means recalibrating the job (see
     # recalibrate_job below) to get real-world court coordinates
@@ -235,9 +240,25 @@ def _reset_for_full_reprocess(job_id: str, output_path: Path) -> Job:
     """Shared by redo_job and recalibrate_job's old-job fallback: any
     existing player names/ignores are cleared rather than carried forward -
     a fresh tracking run assigns new stable_ids, so the old name-to-id
-    mapping would silently apply to the wrong people."""
+    mapping would silently apply to the wrong people.
+
+    court.json/court_background.jpg are cleared too, rather than left to be
+    silently reapplied to the fresh run: a full reprocess exists to start
+    over from scratch (a bad take re-uploaded, a camera that moved, whatever
+    prompted it), and calibration marked against the OLD footage has no
+    guaranteed relationship to the new pipeline output - court_calibration
+    is a Setup-tab step like this one, not something process_job depends on
+    (see its own docstring), so leaving it unset here is enough to route the
+    user back through it, same as a brand-new upload. court_background.jpg
+    would regenerate byte-identical on its own (it's a pure function of the
+    unchanged source video, see calibration.get_court_background's
+    docstring), so clearing it isn't load-bearing - it's here so a
+    reprocess doesn't leave the old calibration's background frame served
+    from a "not yet calibrated" Setup tab."""
     (output_path / config.PLAYER_NAMES_NAME).unlink(missing_ok=True)
     (output_path / config.PLAYER_IGNORED_NAME).unlink(missing_ok=True)
+    (output_path / config.COURT_FILE_NAME).unlink(missing_ok=True)
+    (output_path / config.COURT_BACKGROUND_FILE_NAME).unlink(missing_ok=True)
 
     return store.update(
         job_id,
@@ -294,6 +315,57 @@ async def recalibrate_job(job_id: str):
     return _job_out(store.get(job_id))
 
 
+@router.post("/{job_id}/players/reset", response_model=JobOut)
+async def reset_players(job_id: str):
+    """Throws away every name and ignored flag for this job and works the
+    identities out again from scratch - the Setup tab's "Reset all players".
+
+    Re-runs the identity work rather than only clearing the files, because
+    most of what decides who the detections are does not live in them. The
+    court gate that stops the crowd and the bench becoming players at all,
+    the court-zone and side-of-net weighting that decides which fragments
+    are one person, and the auto-ignore pass that drops whoever is still
+    mostly off court all live in consolidation and
+    players.recalibrate_players. The reset used to skip past both to phase
+    two, which only rebuilds stats/dashboard/video from whatever identities
+    already existed - so it handed back every raw detection with nothing
+    ignored, strictly worse to review than before it was pressed.
+
+    Clearing the names first is what makes the re-consolidation possible.
+    stage_runner._recalibrate refuses to re-consolidate while any name is
+    pinned to a stable_id, since consolidation renumbers identities and
+    would silently repoint those names at different people - but a reset has
+    just deleted every one of them, so there is nothing left to repoint.
+
+    Unlike redo_job this keeps court.json: the calibration is a statement
+    about the camera, not about the players, and it is precisely what the
+    re-run needs in order to be court-aware at all.
+    """
+    job = _get_job_or_404(job_id)
+
+    if job.status != STATUS_COMPLETE:
+        raise HTTPException(status_code=409, detail="Only a completed job's players can be reset")
+
+    output_path = config.output_dir(job_id)
+
+    # Deleted rather than written back empty: an empty player_ignored.json
+    # is indistinguishable from "a human decided nobody should be ignored",
+    # and recalibrate_players is about to derive a fresh set from the court.
+    (output_path / config.PLAYER_NAMES_NAME).unlink(missing_ok=True)
+    (output_path / config.PLAYER_IGNORED_NAME).unlink(missing_ok=True)
+    players.save_player_confirmed(output_path, False)
+
+    # Same fallback recalibrate_job uses - the cheap path has nothing to
+    # re-pick the ball from without saved candidates.
+    if not (output_path / config.BALL_CANDIDATES_FILE_NAME).exists():
+        _reset_for_full_reprocess(job_id, output_path)
+        pipeline.start_phase_one(job_id)
+    else:
+        pipeline.start_recalibration(job_id)
+
+    return _job_out(store.get(job_id))
+
+
 @router.post("/{job_id}/cancel", response_model=JobOut)
 async def cancel_job(job_id: str):
     job = _get_job_or_404(job_id)
@@ -306,10 +378,13 @@ async def cancel_job(job_id: str):
 
 
 @router.delete("/{job_id}", status_code=204)
-async def delete_job(job_id: str):
+async def delete_job(job_id: str, background_tasks: BackgroundTasks):
     job = _get_job_or_404(job_id)
 
     if job.status in (STATUS_PROCESSING, STATUS_FINALIZING):
         raise HTTPException(status_code=409, detail="Cancel the job before deleting it")
 
     store.delete(job_id)
+    # A deleted job's stats need to drop out of every player's profile too -
+    # warm player_profiles.py's store now rather than on the next visit.
+    background_tasks.add_task(player_profiles.warm)

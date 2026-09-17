@@ -10,6 +10,33 @@ import { findIndexAtOrBefore } from "../lib/timeSeries";
 const MIN_ARC_POINTS = 5;
 const MIN_ARC_DURATION_S = 0.15;
 
+// How far the fitted curve is allowed to stray, on average, from the real
+// per-frame points it was fit from (within the shown/clipped window),
+// before it gets suppressed entirely rather than drawn - a fraction of the
+// video's own diagonal, so it means the same thing regardless of the
+// source resolution.
+//
+// px(t)/py(t) are independent quadratics fit through EVERY point in a
+// hit-to-hit window with equal weight (see fitParabola) - a good
+// approximation for a clean, evenly-tracked flight, but a single burst of
+// a few wrong detections (the tracker briefly locking onto a hand, a
+// jersey number, a reflection - three points is enough to meaningfully
+// pull a 3-parameter quadratic) or a real gap where the ball went
+// undetected for a stretch can drag the WHOLE curve off the real path,
+// including through parts nowhere near the bad data. Measured on a real
+// match's every hit-to-hit segment: about 1 in 6 fits strayed further than
+// 40px (on a 1920-wide frame) from their own real data at some point, some
+// by several hundred - clearly visible as the arc cutting across empty
+// space nowhere near the ball. Gating on the fit's own mean residual
+// against its real inputs, rather than trying to make the fit itself more
+// resistant to those points, catches the great majority of those cases
+// (27 of the 37 measured) with zero cost to any segment that was already
+// fine (0 of the other 185 lost) - a two-pass reject-and-refit was also
+// tried and measured worse: it fixed some of the same segments but made
+// others worse in the process, which a pure go/no-go gate on the existing
+// fit structurally cannot do.
+const MAX_ARC_MEAN_RESIDUAL_FRACTION = 0.01;
+
 // How much of a shot's own vertical excursion (apex height minus each
 // end's height) to show on each side, as a fraction - see
 // trajectoryClipRange. 0.5 shows the top half of the arc by height on both
@@ -209,7 +236,7 @@ function BallTrajectoryOverlayImpl({
   const segmentStart = lastHitIdx >= 0 ? hitTimestamps[lastHitIdx] : (points[0]?.t ?? 0);
   const segmentEnd = lastHitIdx + 1 < hitTimestamps.length ? hitTimestamps[lastHitIdx + 1] : Infinity;
 
-  const path = useMemo(() => {
+  const fitted = useMemo(() => {
     if (points.length === 0) return null;
 
     const startIdx = Math.max(0, findIndexAtOrBefore(points, segmentStart));
@@ -229,11 +256,29 @@ function BallTrajectoryOverlayImpl({
     if (!fit) return null;
 
     const [clipStart, clipEnd] = trajectoryClipRange(fit, rawPath[0].t, rawPath[rawPath.length - 1].t);
-    return sampleParabola(fit, clipStart, clipEnd);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [points, segmentStart, segmentEnd]);
 
-  if (!path || videoWidth <= 0 || videoHeight <= 0) return null;
+    // Quality gate - see MAX_ARC_MEAN_RESIDUAL_FRACTION. Checked against the
+    // real points that fall within the shown window, since that's what a
+    // viewer can actually compare the drawn line against (BallTrackingOverlay's
+    // ring draws from this same real data) - a bad stretch OUTSIDE the
+    // clipped window doesn't matter, nothing there is ever drawn either way.
+    const shownResiduals: number[] = [];
+    for (const p of rawPath) {
+      if (p.t < clipStart || p.t > clipEnd) continue;
+      const fitted = evalParabola(fit, p.t);
+      shownResiduals.push(Math.hypot(p.px - fitted.px, p.py - fitted.py));
+    }
+    if (shownResiduals.length >= 3) {
+      const meanResidual = shownResiduals.reduce((a, b) => a + b, 0) / shownResiduals.length;
+      const diagonal = Math.hypot(videoWidth, videoHeight);
+      if (meanResidual > MAX_ARC_MEAN_RESIDUAL_FRACTION * diagonal) return null;
+    }
+
+    return { fit, clipStart, clipEnd, path: sampleParabola(fit, clipStart, clipEnd) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [points, segmentStart, segmentEnd, videoWidth, videoHeight]);
+
+  if (!fitted || videoWidth <= 0 || videoHeight <= 0) return null;
   // Only while actually within this shot's own window - the fit above
   // doesn't depend on currentTimeS, but whether to show it at all still
   // does (nothing to draw before the shot's first touch, or once we've
@@ -244,7 +289,23 @@ function BallTrajectoryOverlayImpl({
   // controls how much of that fixed shape has been drawn so far, so the arc
   // is revealed by the ball travelling along it rather than being redrawn
   // as it goes.
+  //
+  // The tip of the revealed line is evaluated exactly AT currentTimeS
+  // (rather than stopping at whichever of sampleParabola's 40 fixed
+  // samples happens to be <= currentTimeS) so it tracks continuously in
+  // lockstep with BallTrackingOverlay's ring, which interpolates the raw
+  // per-frame data continuously too. Filtering the samples alone made the
+  // line's tip advance in visible steps - up to 1/40th of the shot's own
+  // clipped duration at a time - so the ring (moving smoothly) would pull
+  // visibly ahead of the line between samples and appear to desync from
+  // it, worse the longer/slower the shot. A fixed sample set still gives
+  // the curve its shape; only the very last point needs to be live.
+  const { fit, clipEnd, path } = fitted;
   const revealed = path.filter((p) => p.t <= currentTimeS);
+  const liveT = Math.min(currentTimeS, clipEnd);
+  if (revealed.length === 0 || revealed[revealed.length - 1].t < liveT) {
+    revealed.push({ t: liveT, ...evalParabola(fit, liveT) });
+  }
   if (revealed.length < 2) return null;
 
   const pointsAttr = revealed.map((p) => `${p.px},${p.py}`).join(" ");

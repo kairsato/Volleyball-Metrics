@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Typography from "@mui/material/Typography";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
@@ -59,18 +58,18 @@ export function WarmupPeriodPage({ onJobUpdated }: WarmupPeriodPageProps) {
     };
   }, [job]);
 
-  if (!jobId) return <Navigate to="/videos" replace />;
+  if (!jobId) return <Navigate to="/games" replace />;
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
   if (!job) return <ToolPageSkeleton />;
 
   if (job.status !== "complete") {
     return (
       <Box sx={{ maxWidth: 560 }}>
-        <Typography color="text.secondary" sx={{ mb: 2 }}>
+        <Alert severity="warning" sx={{ mb: 2 }}>
           This video hasn't finished processing yet, so setting a warmup period isn't available.
-        </Typography>
-        <Button variant="contained" onClick={() => navigate(`/video?job=${jobId}`)}>
-          Back to video
+        </Alert>
+        <Button variant="contained" onClick={() => navigate(`/game?job=${jobId}`)}>
+          Back to game
         </Button>
       </Box>
     );
@@ -81,7 +80,7 @@ export function WarmupPeriodPage({ onJobUpdated }: WarmupPeriodPageProps) {
       <Button
         size="small"
         startIcon={<ArrowBackIcon />}
-        onClick={() => navigate(`/video?job=${jobId}&tab=setup`)}
+        onClick={() => navigate(`/game?job=${jobId}&tab=setup`)}
         sx={{ alignSelf: "flex-start", mb: 2, flexShrink: 0 }}
       >
         Back to results

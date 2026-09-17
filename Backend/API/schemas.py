@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -56,6 +56,11 @@ class JobOut(BaseModel):
     needs_player_id: bool = False
     needs_scoring_review: bool = False
     winner_team_name: Optional[str] = None
+    # The other registered team's name, when scoring is configured with two
+    # named teams and a winner has been determined - None if there's no
+    # winner yet, or if the losing side wasn't a registered team (an
+    # unnamed/geometric-only opponent). See score.compute_summary.
+    loser_team_name: Optional[str] = None
     # Whether a warmup period has been confirmed for this video (see
     # warmup.py) - when True, warmup_start_s/warmup_end_s below are the
     # resolved absolute-video-time bounds every viewing surface (the player,
@@ -94,10 +99,26 @@ class CandidateMatchOut(BaseModel):
     confidence: float
 
 
+class CandidateGroupOut(BaseModel):
+    # Detections the appearance model thinks are all the same person, to be
+    # named in one go - see players.build_candidate_groups.
+    stable_ids: list[int]
+    # The weakest link holding the group together, not the strongest.
+    confidence: float
+    # Set when some member is already named, which makes that name the
+    # obvious answer for the rest of the group.
+    suggested_name: Optional[str] = None
+
+
 class PlayersListOut(BaseModel):
     job_id: str
     players: list[PlayerOut]
     candidate_matches: list[CandidateMatchOut] = []
+    candidate_groups: list[CandidateGroupOut] = []
+    # True while these identities are pre-calibration placeholders - see
+    # players.identification_is_provisional. The review UI shows a "calibrate
+    # the court first" state instead of the tiles, and naming is refused.
+    provisional: bool = False
     # Whether the user has explicitly signed off on this video's player
     # identification - see players.load_player_confirmed.
     confirmed: bool = False
@@ -165,7 +186,7 @@ class CalibrationPointsOut(BaseModel):
     # only counted as a real calibration once dragged onto the actual net -
     # see net_top_calibrated. Together with the 4 ground points, these give
     # enough known 3D reference points (2 heights) to solve the camera's
-    # full pose (see calibration.py/CourtDefinition.court.
+    # full pose (see calibration.py/CourtDetection.court.
     # estimate_camera_pose), which is what makes ball-height estimation
     # possible at all.
     net_top_left: Point
@@ -181,7 +202,7 @@ class CalibrationPointsOut(BaseModel):
     # Whether net_top_left/net_top_right were actually dragged onto the net
     # (vs. left at their untouched preset guess) - camera-pose/ball-height
     # estimation is skipped entirely when this is False, same spirit as the
-    # desktop tool's own net_calibrated flag (CourtDefinition.court.
+    # desktop tool's own net_calibrated flag (CourtDetection.court.
     # save_calibration).
     net_top_calibrated: bool = False
     # Whether a camera pose was actually solved from the 6 points (requires
@@ -256,6 +277,13 @@ class PlayerEvent(BaseModel):
     # Gap since the previous touch in the same rally (seconds) - None for a
     # rally's first recorded touch.
     time_since_prev_touch_s: Optional[float] = None
+    # Whether ActionDetection.contactRefinement replaced this touch's raw
+    # detected-frame contact point/speeds with a sub-frame, ball-flight-arc
+    # estimate validated against the attributed player's own tracked
+    # position - False means the fields above come from the older, less
+    # accurate raw-frame method (see contactRefinement.py's module
+    # docstring for when refinement can't be done confidently).
+    contact_refined: bool = False
 
 
 class PlayerStat(BaseModel):
@@ -275,6 +303,41 @@ class RallyOut(BaseModel):
     duration_s: float
 
 
+class GameStatusSegmentOut(BaseModel):
+    # GameStatusDetection's own three-way call for this stretch - see
+    # gameStatusDetection.py's own module docstring for what each one
+    # means. A rally (RallyOut above) almost always contains a "service"
+    # segment followed by a "play" one; this is the only place that split
+    # survives, since RallyOut only keeps a rally's own outer start/end.
+    state: Literal["no-play", "play", "service"]
+    start_time_s: float
+    end_time_s: float
+
+
+class GameStatusOut(BaseModel):
+    job_id: str
+    segments: list[GameStatusSegmentOut]
+    # RAW (not warmup-rebased) rally windows - see RallyOut above and
+    # results_router.get_game_status's own doc comment for why this is a
+    # separate, unrebased copy of what /results' own `rallies` field
+    # returns. Used by the Debug review page's rally editor, which needs to
+    # work in the same time basis it writes back via PUT .../rallies.
+    rallies: list[RallyOut] = []
+
+
+class RallyBoundsIn(BaseModel):
+    start_time_s: float
+    end_time_s: float
+
+
+class RallyOverrideIn(BaseModel):
+    # Raw (not warmup-rebased) rally windows a reviewer has corrected on the
+    # Debug review page - see results_router.override_rallies. Any order;
+    # the server re-sorts by start_time_s and reassigns rally_index from
+    # that order rather than trusting a client-supplied index.
+    rallies: list[RallyBoundsIn]
+
+
 class QualitiesOut(BaseModel):
     # "original" (the untouched uploaded file) is always first, followed by
     # whichever downscaled renditions actually got generated (see
@@ -282,6 +345,9 @@ class QualitiesOut(BaseModel):
     # tier that wasn't actually produced (source too small, job predates
     # this feature, transcoding failed).
     qualities: list[str]
+    # Display label for the "original" entry above, e.g.
+    # "Original (1920x1080, 42 Mbps)" - see results_router._original_label.
+    original_label: str = "Original"
 
 
 class ResultsOut(BaseModel):
@@ -300,7 +366,7 @@ class BallTrajectoryPointOut(BaseModel):
     t: float
     # Real-world court coordinates in metres - same coordinate system as
     # ActionQualityCategory instances' ball_court field, origin/axes per
-    # CourtDefinition.court's own convention. Can fall outside the
+    # CourtDetection.court's own convention. Can fall outside the
     # court_length_m x court_width_m rectangle below (e.g. a serve from
     # behind the baseline) - the frontend clamps/clips for display. Used
     # for the small corner minimap (VideoPlayer's Minimap annotation).
@@ -330,7 +396,7 @@ class BallTrajectoryOut(BaseModel):
     job_id: str
     points: list[BallTrajectoryPointOut] = []
     # Metres - CalibrationPointsOut's own net_height_m when this job has
-    # been calibrated, CourtDefinition.court.NET_HEIGHT_M (the standard
+    # been calibrated, CourtDetection.court.NET_HEIGHT_M (the standard
     # men's height) otherwise, same fallback calibration.py itself uses
     # before a net height is explicitly set.
     net_height_m: float
@@ -423,7 +489,7 @@ class MatchupOut(BaseModel):
 
 
 # Which named roster team (team_roster.py) won each rally, and how rallies
-# group into games/sets - distinct from MatchupOut's anonymous, whole-video
+# group into sets - distinct from MatchupOut's anonymous, whole-video
 # "Team A/B" geometric split above. See score.py's module docstring.
 class ScoreConfigOut(BaseModel):
     method: str = "none"
@@ -436,6 +502,10 @@ class ScoreConfigOut(BaseModel):
     # module docstring for the "sideline view" assumption this corrects
     # for when the camera/region has the two sides mirrored.
     cv_reverse_direction: bool = False
+    # Only meaningful for method "automatic" - see score.DEFAULT_CONFIG's
+    # comments for both.
+    invert_side: bool = False
+    match_alternating_sides: bool = True
     # Minimum easyocr confidence (0-1) a digit-run detection needs before
     # score_cv counts it - see score.DEFAULT_CONFIG's docstring.
     ocr_min_confidence: float = 0.0
@@ -452,6 +522,8 @@ class ScoreConfigIn(BaseModel):
     team_y_id: Optional[str] = None
     ocr_region: Optional[dict] = None
     cv_reverse_direction: bool = False
+    invert_side: bool = False
+    match_alternating_sides: bool = True
     ocr_min_confidence: float = 0.0
 
 
@@ -489,15 +561,15 @@ class ScoreRegionTestOut(BaseModel):
     detections: list[OcrDetectionOut] = []
 
 
-class GameOut(BaseModel):
-    game_index: int
+class SetOut(BaseModel):
+    set_index: int
     start_rally_index: int
     end_rally_index: int
 
 
 class RallyWinnerOut(BaseModel):
     rally_index: int
-    game_index: int
+    set_index: int
     winner: Optional[str] = None
     confidence: str = "manual"
     # The raw digits the Computer Vision method actually read for this
@@ -512,20 +584,20 @@ class RallyWinnerIn(BaseModel):
     winner: Optional[str] = None
 
 
-# range_start/range_end are inclusive, 0-based, and mean game_index for
-# "games" or rally_index for "rallies" - unused (and ignored) for "match".
+# range_start/range_end are inclusive, 0-based, and mean set_index for
+# "sets" or rally_index for "rallies" - unused (and ignored) for "match".
 class ScoreComputeIn(BaseModel):
     range_type: str = "match"
     range_start: Optional[int] = None
     range_end: Optional[int] = None
 
 
-class GameBoundaryIn(BaseModel):
+class SetBoundaryIn(BaseModel):
     split: bool
 
 
 class ScoreResultOut(BaseModel):
-    games: list[GameOut] = []
+    sets: list[SetOut] = []
     rallies: list[RallyWinnerOut] = []
 
 
@@ -604,7 +676,26 @@ class ActionQualityOut(BaseModel):
     receive: ActionQualityCategoryOut
     set: ActionQualityCategoryOut
     spike: ActionQualityCategoryOut
+    block: ActionQualityCategoryOut
     caveats: list[str] = []
+
+
+class PlayerQualityMatchOut(BaseModel):
+    job_id: str
+    original_filename: str
+    average_score: float
+    count: int
+
+
+class PlayerQualityCategoryOut(BaseModel):
+    average_score: Optional[float] = None
+    # Median of this player's own per-match average_score in this category -
+    # the baseline PlayerStatsPage's "how much this game differs from
+    # normal for them" coloring compares each match entry against, rather
+    # than against the rest of the roster.
+    median_score: Optional[float] = None
+    count: int
+    matches: list[PlayerQualityMatchOut] = []
 
 
 class TeamPlayerSummaryOut(BaseModel):
@@ -613,11 +704,11 @@ class TeamPlayerSummaryOut(BaseModel):
     hits_by_type: dict[str, int] = {}
 
 
-class TeamVideoSummaryOut(BaseModel):
+class TeamGameSummaryOut(BaseModel):
     job_id: str
     original_filename: str
-    game_wins: int
-    game_losses: int
+    set_wins: int
+    set_losses: int
 
 
 class TeamStatsOut(BaseModel):
@@ -626,27 +717,70 @@ class TeamStatsOut(BaseModel):
     # Every complete job with at least one roster member named in its
     # player_stats.json contributes to total_hits/hits_by_type/players
     # below, regardless of whether Scoring was ever configured for it.
-    videos_total: int
+    games_total: int
     # Only jobs where Scoring was configured with this team as team_x/
-    # team_y contribute to match/game records and the radar - see
+    # team_y contribute to match/set records and the radar - see
     # team_stats.py's module docstring for why (team_roster.py has no
-    # inherent link to any per-video geometric side without it).
-    videos_with_scoring: int
+    # inherent link to any per-game geometric side without it).
+    games_with_scoring: int
     match_wins: int
     match_losses: int
-    game_wins: int
-    game_losses: int
+    set_wins: int
+    set_losses: int
     radar: list[RadarPointOut] = []
     total_hits: int
     hits_by_type: dict[str, int] = {}
     players: list[TeamPlayerSummaryOut] = []
-    videos: list[TeamVideoSummaryOut] = []
+    games: list[TeamGameSummaryOut] = []
 
 
-class PlayerRadarOut(BaseModel):
+class PlayerGameOut(BaseModel):
+    job_id: str
+    original_filename: str
+    date_played: Optional[str] = None
+    total_hits: int
+    rallies_participated: int
+    rally_ending_touches: int
+    hits_by_type: dict[str, int] = {}
+    # Which of this game's two configured teams (if either) had this
+    # player on its roster, and whether that team won - None/None/None
+    # when the player isn't on either configured team's roster, or the
+    # game has no determinable winner (see player_profiles.py).
+    team_id: Optional[str] = None
+    team_name: Optional[str] = None
+    result: Optional[str] = None  # "win" | "loss" | None
+
+
+class PlayerProfileOut(BaseModel):
+    """Everything one player's profile page needs, rolled up across every
+    complete game - hit stats, action-quality, win-rate-by-action radar,
+    and the per-game breakdown a win/loss trend chart filters against.
+    Read straight from player_profiles.py's persisted store; nothing here
+    is recomputed on the request path."""
     name: str
-    videos_with_data: int
+    thumbnail_base64: Optional[str] = None
+    total_hits: int
+    rallies_participated: int
+    rally_ending_touches: int
+    hits_by_type: dict[str, int] = {}
+    games: list[PlayerGameOut] = []
     radar: list[RadarPointOut] = []
+    games_with_radar_data: int = 0
+    quality_categories: dict[str, PlayerQualityCategoryOut] = {}
+
+
+class PlayerProfileSummaryOut(BaseModel):
+    """The lightweight slice PlayersPage's grid needs - no per-game
+    breakdown, radar, or quality, just enough to render a card."""
+    name: str
+    thumbnail_base64: Optional[str] = None
+    total_hits: int
+    rallies_participated: int
+    game_count: int
+
+
+class PlayerProfilesOut(BaseModel):
+    players: list[PlayerProfileSummaryOut] = []
 
 
 class AuthStatusOut(BaseModel):
@@ -730,3 +864,62 @@ class ShareStatusOut(BaseModel):
 class HostnameIn(BaseModel):
     # None/blank clears it - see share.set_hostname.
     hostname: Optional[str] = None
+
+
+class HeuristicParamOut(BaseModel):
+    # "DICT_NAME.subkey" for a param that overrides one entry of a
+    # module-level dict constant (e.g. action_quality.SERVE_WEIGHTS), a
+    # plain module attribute name otherwise - see heuristics.apply_overrides.
+    key: str
+    label: str
+    description: str
+    type: Literal["float", "int", "enum"]
+    default: float | int | str
+    min: Optional[float] = None
+    max: Optional[float] = None
+    step: Optional[float] = None
+    options: Optional[list[str]] = None
+    # Sub-heading to cluster related params under within a stage (e.g. the
+    # "consolidating" stage's per-action-type score weights) - None when a
+    # stage's params don't need sub-grouping.
+    group: Optional[str] = None
+
+
+class HeuristicStageOut(BaseModel):
+    key: str
+    label: str
+    phase: Literal["preprocessing", "postprocessing"]
+    summary: str
+    params: list[HeuristicParamOut]
+
+
+class HeuristicsRegistryOut(BaseModel):
+    stages: list[HeuristicStageOut]
+
+
+class HeuristicProfileOut(BaseModel):
+    id: str
+    name: str
+    is_default: bool
+    # stage key -> {param key -> value}, always fully resolved against the
+    # current registry (see heuristics._resolve_values) - never missing a
+    # key just because a profile predates it.
+    values: dict[str, dict[str, float | int | str]]
+
+
+class HeuristicsStateOut(BaseModel):
+    active_profile_id: str
+    profiles: list[HeuristicProfileOut]
+
+
+class ProfileCreateIn(BaseModel):
+    name: str
+    # Defaults to the Default profile's own values when omitted.
+    base_profile_id: Optional[str] = None
+
+
+class ProfileUpdateIn(BaseModel):
+    name: Optional[str] = None
+    # Partial - only the stages/params included are changed, everything
+    # else on the profile is left as-is.
+    values: Optional[dict[str, dict[str, float | int | str]]] = None

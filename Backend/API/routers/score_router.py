@@ -1,13 +1,13 @@
 import threading
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import Response
 
-from .. import calibration, config, score
+from .. import config
+from ..services import calibration, player_profiles, score
 from ..jobs import store
 from ..schemas import (
-    GameBoundaryIn,
     RallyWinnerIn,
     ScoreComputeIn,
     ScoreConfigIn,
@@ -17,6 +17,7 @@ from ..schemas import (
     ScoreRegionTestIn,
     ScoreRegionTestOut,
     ScoreResultOut,
+    SetBoundaryIn,
 )
 
 router = APIRouter(prefix="/api/jobs/{job_id}/score", tags=["score"])
@@ -80,7 +81,7 @@ def test_region(job_id: str, body: ScoreRegionTestIn):
     if video_path is None:
         raise HTTPException(status_code=404, detail="No uploaded video found for this job")
 
-    from .. import score_cv  # lazy - pulls in easyocr/torch, not needed unless OCR is actually used
+    from ..services import score_cv  # lazy - pulls in easyocr/torch, not needed unless OCR is actually used
 
     try:
         result = score_cv.test_region(video_path, body.t, body.region.model_dump(), body.min_confidence)
@@ -102,7 +103,7 @@ async def set_config(job_id: str, body: ScoreConfigIn):
 
 
 @router.put("/confirm", response_model=ScoreConfigOut)
-async def set_confirmed(job_id: str, body: ScoreConfirmIn):
+async def set_confirmed(job_id: str, body: ScoreConfirmIn, background_tasks: BackgroundTasks):
     """Separate from set_config above (which replaces the whole
     method/teams/region/reverse-direction bundle) so confirming/redoing
     scoring can never accidentally reset a config field it has nothing to
@@ -110,6 +111,10 @@ async def set_confirmed(job_id: str, body: ScoreConfirmIn):
     _require_job(job_id)
     output_path = config.output_dir(job_id)
     cfg = score.save_config(output_path, {"confirmed": body.confirmed})
+    # A confirmed win/loss is what a player's profile page's trend chart
+    # reads - warm player_profiles.py's store now rather than making the
+    # next Players/profile page visit pay the rebuild cost.
+    background_tasks.add_task(player_profiles.warm)
     return ScoreConfigOut(**cfg)
 
 
@@ -120,7 +125,7 @@ def _run_compute(job_id: str, method: str, rally_range: Optional[tuple[int, int]
             if method == "automatic":
                 score.compute_automatic(output_path, rally_range=rally_range)
             elif method == "ocr":
-                from .. import score_cv
+                from ..services import score_cv
 
                 score_cv.compute_cv(output_path, config.find_input_video(job_id), rally_range=rally_range)
             score.save_config(output_path, {"compute_status": "done", "compute_error": None})
@@ -169,10 +174,10 @@ async def compute(job_id: str, body: ScoreComputeIn = ScoreComputeIn()):
     return ScoreConfigOut(**cfg)
 
 
-@router.put("/games/{rally_index}", response_model=ScoreResultOut)
-async def set_game_boundary(job_id: str, rally_index: int, body: GameBoundaryIn):
+@router.put("/sets/{rally_index}", response_model=ScoreResultOut)
+async def update_set_boundary(job_id: str, rally_index: int, body: SetBoundaryIn):
     _require_job(job_id)
-    result = score.set_game_boundary(config.output_dir(job_id), rally_index, body.split)
+    result = score.update_set_boundary(config.output_dir(job_id), rally_index, body.split)
     return ScoreResultOut(**result)
 
 

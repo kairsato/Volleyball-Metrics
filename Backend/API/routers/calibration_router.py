@@ -3,7 +3,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
-from .. import calibration, config
+from .. import config
+from ..services import calibration
 from ..jobs import store
 from ..schemas import CalibrationConfirmIn, CalibrationIn, CalibrationPointsOut, Point
 

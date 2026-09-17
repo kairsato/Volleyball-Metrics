@@ -8,13 +8,14 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 
-from CourtDefinition.court import COURT_LENGTH, COURT_WIDTH, camera_to_world, camera_pose_candidates
+from CourtDetection.court import COURT_LENGTH, COURT_WIDTH, camera_to_world, camera_pose_candidates
+from GameStatusDetection.rallyWindows import compute_track_windows, in_windows
 
 MODEL_PATH = str(
-    Path(__file__).resolve().parents[1] / "MachineLearning" / "models" / "ballDetection_yolo26x_best.pt"
+    Path(__file__).resolve().parents[2] / "MachineLearning" / "models" / "ballDetection_yolo26x_best.pt"
 )
 SECONDARY_MODEL_PATH = str(
-    Path(__file__).resolve().parents[1] / "MachineLearning" / "models" / "ballDetection_yolo11x_best.pt"
+    Path(__file__).resolve().parents[2] / "MachineLearning" / "models" / "ballDetection_yolo11x_best.pt"
 )
 OUTPUT_VIDEO_NAME = "ball.mp4"
 SPEED_LOG_NAME = "ball_speed.json"
@@ -53,7 +54,7 @@ BALL_ROI_PADDING_FRACTION = 0.08
 
 def load_homography(output_path):
     """
-    Load the pixel -> real-world-court-metres transform CourtDefinition.court
+    Load the pixel -> real-world-court-metres transform CourtDetection.court
     saved for this video. Returns None (speed then falls back to pixels/sec)
     if no calibration has been saved yet.
     """
@@ -77,7 +78,7 @@ def load_homography(output_path):
 
 
 def load_court_corners(output_path):
-    """Load the four court corners CourtDefinition.court saved for this video,
+    """Load the four court corners CourtDetection.court saved for this video,
     in frame pixel coordinates. Returns None if no calibration has been saved."""
 
     court_file = Path(output_path) / COURT_FILE_NAME
@@ -104,7 +105,7 @@ def load_court_corners(output_path):
 
 def load_camera_pose(output_path):
     """
-    Load the camera pose (intrinsics + extrinsics) CourtDefinition.court's
+    Load the camera pose (intrinsics + extrinsics) CourtDetection.court's
     estimate_camera_pose solved and calibration.py cached into court.json's
     "camera_pose" key - see estimate_ball_height below for what it's used
     for. Returns None if no calibration has been saved, the net-top points
@@ -189,9 +190,9 @@ def load_calibration_points(output_path):
 def estimate_ball_world_position(box, camera_pose):
     """
     Estimates the ball's full 3D position in world (court) coordinates -
-    metres, origin/axes per CourtDefinition.court's convention, Z = height
+    metres, origin/axes per CourtDetection.court's convention, Z = height
     above the ground plane - from a single detection box, using the camera
-    pose CourtDefinition.court.estimate_camera_pose solved (see
+    pose CourtDetection.court.estimate_camera_pose solved (see
     load_camera_pose above) plus the ball's known real-world diameter
     (BALL_DIAMETER_M):
 
@@ -455,11 +456,31 @@ def unpack_ball_boxes(result):
     return boxes.xyxy.cpu().numpy(), boxes.conf.cpu().numpy()
 
 
-def modelDetection(video_path, models, roi, device):
+def modelDetection(video_path, models, roi, device, output_path=None):
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # The frames actually worth running the (two-model) detector over - see
+    # rallyWindows.compute_track_windows's own docstring, and
+    # PlayerDetection.tracker.track_and_chain for the sibling stage this
+    # mirrors. None (output_path not given, or no game_status.json saved
+    # yet) means every frame is in-window - unchanged from before this
+    # existed.
+    #
+    # Unlike track_and_chain, this does NOT skip the frame READ/decode for
+    # an out-of-window frame, only the (much more expensive - two YOLO
+    # models per frame) detector call, and it still appends a real
+    # frames_raw entry either way. postProcessing/build_speed_log below
+    # both index this list POSITIONALLY (frames_raw[i] assumed to be frame
+    # i), an assumption that runs deep enough through this stage's
+    # interpolation/flight-fitting logic that changing it is a much bigger,
+    # riskier change than this stage's own share of the time saved would be
+    # worth - skipping just the detector call still removes the dominant
+    # cost (two full-frame model passes) while leaving every array the same
+    # shape it always was.
+    windows = compute_track_windows(output_path, fps) if output_path is not None else None
 
     frames_raw = []
     frame_idx = 0
@@ -470,16 +491,17 @@ def modelDetection(video_path, models, roi, device):
                 break
 
             candidates = []
-            for model_name, model in models:
-                result = model.predict(source=frame, classes=[BALL_CLASS_ID], conf=COLLECTION_CONF_THRESHOLD,
-                                        imgsz=MODEL_IMG_SIZE, device=device, verbose=False)[0]
-                boxes, confs = unpack_ball_boxes(result)
-                for box, conf in zip(boxes, confs):
-                    if box_diagonal(box) < MIN_BALL_DIAGONAL_PX:
-                        continue
-                    if not box_in_roi(box, roi):
-                        continue
-                    candidates.append({"box": [float(v) for v in box], "conf": float(conf), "model": model_name})
+            if in_windows(frame_idx, windows):
+                for model_name, model in models:
+                    result = model.predict(source=frame, classes=[BALL_CLASS_ID], conf=COLLECTION_CONF_THRESHOLD,
+                                            imgsz=MODEL_IMG_SIZE, device=device, verbose=False)[0]
+                    boxes, confs = unpack_ball_boxes(result)
+                    for box, conf in zip(boxes, confs):
+                        if box_diagonal(box) < MIN_BALL_DIAGONAL_PX:
+                            continue
+                        if not box_in_roi(box, roi):
+                            continue
+                        candidates.append({"box": [float(v) for v in box], "conf": float(conf), "model": model_name})
 
             frames_raw.append({"frame_idx": frame_idx, "candidates": candidates})
             frame_idx += 1
@@ -1115,7 +1137,7 @@ def detectBall(video_path, output_path, show_preview=False, save_video=False):
 
     t_start = time.perf_counter()
     print("Detecting ball candidates across the whole video...")
-    frames_raw, fps, frame_w, frame_h = modelDetection(video_path, models, roi, device)
+    frames_raw, fps, frame_w, frame_h = modelDetection(video_path, models, roi, device, output_path)
     print(f"Model detection done in {time.perf_counter() - t_start:.1f}s "
           f"({sum(len(f['candidates']) for f in frames_raw)} candidates over {len(frames_raw)} frames).")
 

@@ -11,6 +11,7 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
+import Divider from "@mui/material/Divider";
 import FormControl from "@mui/material/FormControl";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import InputLabel from "@mui/material/InputLabel";
@@ -45,42 +46,44 @@ const METHOD_LABELS: Record<ScoreMethod, string> = {
 // one actually does before picking it, not just its name.
 const METHOD_DESCRIPTIONS: Record<ScoreMethod, string> = {
   none: "Scoring isn't tracked for this video.",
-  manual: "You assign every rally's winner and every game boundary yourself, from scratch.",
-  automatic: "Guesses each rally's winner from which side the tracked ball was last seen on before it went out - no scoreboard needed, but never certain.",
+  manual: "You assign every rally's winner and every set boundary yourself, from scratch.",
+  automatic: "Guesses each rally's winner from which side serves the next rally, tracked from the ball - no scoreboard needed, but never certain.",
   ocr: "Reads the scoreboard region you mark using a YOLO detector plus a digit-reading model - untested on real footage, so expect to correct it.",
 };
 
-type RangeType = "match" | "games" | "rallies";
+type RangeType = "match" | "sets" | "rallies";
 
 const RANGE_LABELS: Record<RangeType, string> = {
   match: "Whole match",
-  games: "Games",
+  sets: "Sets",
   rallies: "Rallies",
 };
 
 // A minimum, not a fixed height - each card grows a bit taller when it
 // also needs to show its "N undecided" warning line.
-const GAME_ROW_MIN_HEIGHT_PX = 70;
-const GAME_ROW_GAP_PX = 8;
+const SET_ROW_MIN_HEIGHT_PX = 70;
+const SET_ROW_GAP_PX = 8;
 
-// The Scoring Determination + Determined Score column sits to the left of
-// the video+track column at this fixed width; the right-hand column takes
+// The Scoring Determination + Estimated Score card sits to the right of the
+// video+track column at this fixed width; the video+track column takes
 // whatever width is left over.
-const LEFT_COLUMN_WIDTH_PX = 300;
+const SIDEBAR_WIDTH_PX = 300;
 
-// Seeking a game jumps most of the way through it rather than to the very
-// start - matches ScoreTrackEditor's own rally/game seek behavior.
+// Seeking a set jumps most of the way through it rather than to the very
+// start - matches ScoreTrackEditor's own rally/set seek behavior.
 const SEEK_FRACTION = 0.9;
 
-// The estimated score so far, one boxed card per identified game titled
+// The estimated score so far, one boxed card per identified set titled
 // "Match N" with its time span and a "Team 1 (2-1) Team 2" line underneath
-// - whichever team currently leads that game is colored green, the other
+// - whichever team currently leads that set is colored green, the other
 // red (tied stays neutral) - recomputed straight from scoreResult on every
 // render, so it updates the moment a winner is assigned or corrected
-// without any extra fetch. Clicking a game jumps the video into it, the
-// same as clicking that game's row in the track editor. The card itself
-// fills whatever vertical space is left in the left-hand column (flex: 1
-// below), with only the list of match boxes scrolling internally.
+// without any extra fetch. Clicking a set jumps the video into it, the
+// same as clicking that set's row in the track editor. This renders as the
+// lower section of the shared Scoring Determination card (see the Divider
+// in ScoreSection below), not its own bordered box, and fills whatever
+// vertical space that card has left (flex: 1 below), with only the list of
+// match boxes scrolling internally.
 //
 // "Confirm Scoring" is disabled (with an explanation) only while a rally
 // is marked "uncertain" - the automatic/CV methods' own admission that
@@ -97,8 +100,12 @@ const SEEK_FRACTION = 0.9;
 // LockOverlay) until it's undone. Redo Scoring, once confirmed, asks for
 // an explicit confirmation before flipping the flag back - unlike the
 // other Redo* actions elsewhere in Setup, it doesn't reprocess or clear
-// anything, it just unlocks scoring for further edits.
-function GamesList({
+// anything, it just unlocks scoring for further edits. Unlike the Method/
+// Team/Analyze section above the divider, this section is never covered by
+// a LockOverlay - the Reset/Confirm/Redo buttons and set-box seeking stay
+// usable after confirming, since none of them change score data on their
+// own.
+function SetsList({
   result,
   rallies,
   team1Name,
@@ -122,7 +129,7 @@ function GamesList({
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
 
-  if (result.games.length === 0) return null;
+  if (result.sets.length === 0) return null;
 
   const uncertainCount = result.rallies.filter((r) => r.confidence === "uncertain").length;
   const confirmDisabled = uncertainCount > 0;
@@ -138,7 +145,7 @@ function GamesList({
   }
 
   return (
-    <Card variant="outlined" sx={{ width: "100%", p: 2, flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+    <Box sx={{ width: "100%", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", mb: 1, flexShrink: 0 }}>
         <Typography variant="overline" color="text.secondary">
           Estimated Score
@@ -153,20 +160,20 @@ function GamesList({
         </Button>
       </Stack>
 
-      <Stack spacing={`${GAME_ROW_GAP_PX}px`} sx={{ flex: 1, minHeight: 0, overflowY: "auto", pr: 0.5 }}>
-        {result.games.map((game) => {
-          const gameRallies = result.rallies.filter((r) => r.game_index === game.game_index);
-          const wins1 = gameRallies.filter((r) => r.winner === "x").length;
-          const wins2 = gameRallies.filter((r) => r.winner === "y").length;
+      <Stack spacing={`${SET_ROW_GAP_PX}px`} sx={{ flex: 1, minHeight: 0, overflowY: "auto", pr: 0.5 }}>
+        {result.sets.map((matchSet) => {
+          const setRallies = result.rallies.filter((r) => r.set_index === matchSet.set_index);
+          const wins1 = setRallies.filter((r) => r.winner === "x").length;
+          const wins2 = setRallies.filter((r) => r.winner === "y").length;
           const team1Color = wins1 === wins2 ? "text.primary" : wins1 > wins2 ? WIN_COLOR : LOSS_COLOR;
           const team2Color = wins1 === wins2 ? "text.primary" : wins2 > wins1 ? WIN_COLOR : LOSS_COLOR;
-          const gameUncertain = gameRallies.filter((r) => r.confidence === "uncertain").length;
+          const setUncertain = setRallies.filter((r) => r.confidence === "uncertain").length;
 
-          const startRally = rallies[game.start_rally_index];
-          const endRally = rallies[game.end_rally_index];
+          const startRally = rallies[matchSet.start_rally_index];
+          const endRally = rallies[matchSet.end_rally_index];
 
           function handleClick() {
-            const span = rallies.slice(game.start_rally_index, game.end_rally_index + 1);
+            const span = rallies.slice(matchSet.start_rally_index, matchSet.end_rally_index + 1);
             if (span.length === 0) return;
             const startS = span[0].start_time_s;
             const endS = span[span.length - 1].end_time_s;
@@ -175,11 +182,11 @@ function GamesList({
 
           return (
             <Card
-              key={game.game_index}
+              key={matchSet.set_index}
               variant="outlined"
               onClick={handleClick}
               sx={{
-                minHeight: GAME_ROW_MIN_HEIGHT_PX,
+                minHeight: SET_ROW_MIN_HEIGHT_PX,
                 flexShrink: 0,
                 px: 1.5,
                 py: 0.75,
@@ -188,7 +195,7 @@ function GamesList({
               }}
             >
               <Typography variant="subtitle2" sx={{ fontWeight: 700, borderBottom: 1, borderColor: "divider", pb: 0.25, mb: 0.5 }}>
-                Match {game.game_index + 1}
+                Match {matchSet.set_index + 1}
               </Typography>
 
               {startRally && endRally && (
@@ -209,11 +216,11 @@ function GamesList({
                 </Typography>
               </Stack>
 
-              {gameUncertain > 0 && (
+              {setUncertain > 0 && (
                 <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.25 }}>
                   <WarningAmberIcon sx={{ fontSize: 14, color: "warning.main" }} />
                   <Typography variant="caption" color="warning.main">
-                    {gameUncertain} uncertain
+                    {setUncertain} uncertain
                   </Typography>
                 </Stack>
               )}
@@ -254,7 +261,7 @@ function GamesList({
         <DialogTitle>Reset all scores?</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            This clears every rally's winner back to undecided. Game boundaries are kept. This
+            This clears every rally's winner back to undecided. Set boundaries are kept. This
             can't be undone.
           </DialogContentText>
         </DialogContent>
@@ -267,7 +274,7 @@ function GamesList({
           </Button>
         </DialogActions>
       </Dialog>
-    </Card>
+    </Box>
   );
 }
 
@@ -362,8 +369,8 @@ function OcrRegionDialog({
 // thumb picks both ends of the range in one control, and disableSwap keeps
 // the start from ever crossing past the end (or vice versa) the way the
 // old pair of independently-typed numbers easily could. The slider's own
-// min/max is the actual count of games or rallies that exist right now
-// (upperBound, e.g. "2 games so far") rather than an arbitrary cap, so
+// min/max is the actual count of sets or rallies that exist right now
+// (upperBound, e.g. "2 sets so far") rather than an arbitrary cap, so
 // there's no way to select past what's actually there to analyze.
 function RangePicker({
   rangeType,
@@ -380,14 +387,14 @@ function RangePicker({
   disabled?: boolean;
   onChange: (start: number, end: number) => void;
 }) {
-  const unit = rangeType === "games" ? "game" : "rally";
-  const unitPlural = rangeType === "games" ? "games" : "rallies";
+  const unit = rangeType === "sets" ? "set" : "rally";
+  const unitPlural = rangeType === "sets" ? "sets" : "rallies";
   const sliderMax = Math.max(upperBound, 1);
 
   return (
     <Box sx={{ px: 1 }}>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-        {rangeType === "games" ? "Game range" : "Rally range"}:{" "}
+        {rangeType === "sets" ? "Set range" : "Rally range"}:{" "}
         {rangeStart === rangeEnd ? `${unit} ${rangeStart}` : `${unitPlural} ${rangeStart}–${rangeEnd}`} ({upperBound}{" "}
         {upperBound === 1 ? unit : unitPlural} so far)
       </Typography>
@@ -423,10 +430,10 @@ interface ScoreSectionProps {
   videoElement: ReactNode;
 }
 
-// Who won each rally, and how rallies group into games/sets - a named
+// Who won each rally, and how rallies group into sets - a named
 // roster team (see team_roster.py / TeamsPage) is identified for one or
 // both sides once per video; which physical side each team is on is then
-// worked out automatically per game rather than assumed fixed, since teams
+// worked out automatically per set rather than assumed fixed, since teams
 // swap sides between sets. See Backend/API/score.py's module docstring for
 // the full design.
 export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }: ScoreSectionProps) {
@@ -439,7 +446,7 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
   const [rangeStart, setRangeStart] = useState(1);
   const [rangeEnd, setRangeEnd] = useState(1);
   const [ocrDialogOpen, setOcrDialogOpen] = useState(false);
-  // Lifted up from GamesList (rather than each locked control owning its
+  // Lifted up from SetsList (rather than each locked control owning its
   // own copy) so every locked surface - the Scoring Determination card,
   // the track editor, and the "Redo Scoring" button itself - all open the
   // exact same confirmation dialog instead of three separate ones.
@@ -477,18 +484,18 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
     };
   }, []);
 
-  // Whenever the range picker switches into "games" or "rallies", default
+  // Whenever the range picker switches into "sets" or "rallies", default
   // its two thumbs to 0% (the very first one) and 50% of however many
   // exist right now, rather than leaving both stuck at the same starting
   // value (1) - two coincident thumbs plus disableSwap (see RangePicker)
   // meant neither could actually be dragged, since disableSwap treats
   // "already at the other thumb's value" as a hard wall in both
   // directions. Only re-runs when rangeType itself changes, not on every
-  // gameCount/rallies update, matching how the rest of this file (e.g.
+  // setCount/rallies update, matching how the rest of this file (e.g.
   // OcrRegionDialog) only resets a draft on its own explicit trigger.
   useEffect(() => {
     if (rangeType === "match") return;
-    const upperBound = rangeType === "games" ? (scoreResult?.games.length ?? 0) : rallies.length;
+    const upperBound = rangeType === "sets" ? (scoreResult?.sets.length ?? 0) : rallies.length;
     const sliderMax = Math.max(upperBound, 1);
     setRangeStart(1);
     setRangeEnd(Math.max(1, Math.round((1 + sliderMax) / 2)));
@@ -524,6 +531,8 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
         merged.team_y_id,
         merged.ocr_region,
         merged.cv_reverse_direction,
+        merged.invert_side,
+        merged.match_alternating_sides,
         merged.ocr_min_confidence,
       );
       setScoreConfig(saved);
@@ -550,7 +559,7 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
 
   async function handleToggleBoundary(rallyIndex: number, split: boolean) {
     try {
-      const result = await api.setGameBoundary(job.id, rallyIndex, split);
+      const result = await api.updateSetBoundary(job.id, rallyIndex, split);
       setScoreResult(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -609,7 +618,7 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
   const team2Name = teamY?.name ?? "Team 2";
   const computing = scoreConfig.compute_status === "computing";
   const maxTimeS = rallies.length > 0 ? rallies[rallies.length - 1].end_time_s : 0;
-  const gameCount = scoreResult?.games.length ?? 0;
+  const setCount = scoreResult?.sets.length ?? 0;
   // A completed run that couldn't determine a single rally's winner - a
   // near-silent failure otherwise (the track editor would just show every
   // rally as gray/undecided, easy to mistake for "hasn't been analyzed
@@ -624,7 +633,7 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
     scoreResult.rallies.every((r) => r.winner === null);
 
   // The OCR region picker's scrub range follows whatever range is
-  // currently selected in the Tools panel (Match/Games/Rallies), rather
+  // currently selected in the Tools panel (Match/Sets/Rallies), rather
   // than always spanning the whole video - if you're about to run OCR
   // over just "Rallies 5-8", the scoreboard you mark should be found by
   // scrubbing within that window, not the entire match.
@@ -639,11 +648,11 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
       return { minTimeS: startRally.start_time_s, maxTimeS: endRally.end_time_s };
     }
 
-    const games = scoreResult?.games ?? [];
-    const startGame = games.find((g) => g.game_index === rangeStart - 1);
-    const endGame = games.find((g) => g.game_index === rangeEnd - 1);
-    const startRally = startGame ? rallies[startGame.start_rally_index] : undefined;
-    const endRally = endGame ? rallies[endGame.end_rally_index] : undefined;
+    const sets = scoreResult?.sets ?? [];
+    const startSet = sets.find((s) => s.set_index === rangeStart - 1);
+    const endSet = sets.find((s) => s.set_index === rangeEnd - 1);
+    const startRally = startSet ? rallies[startSet.start_rally_index] : undefined;
+    const endRally = endSet ? rallies[endSet.end_rally_index] : undefined;
     if (!startRally || !endRally) return fallback;
     return { minTimeS: startRally.start_time_s, maxTimeS: endRally.end_time_s };
   }
@@ -656,180 +665,39 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
 
       {/* Two side-by-side elements filling whatever's left of the page
           (flex: 1, minHeight: 0 below, against the root Stack's height:
-          100% above): the Scoring Determination + Estimated Score column
-          on the left, and the video + track stacked together as one unit
-          on the right. Within that right-hand column, the track keeps its
-          own fixed height (TRACK_HEIGHT_PX, set in ScoreTrackEditor) and
-          the video is what flexes to fill whatever vertical space is left
-          over above it. */}
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ flex: 1, minHeight: 0 }}>
-        {/* Stretches (via the row's default alignItems) to match the
-            right-hand column's height, same as it does. The Scoring
-            Determination card keeps its own natural height (flexShrink: 0)
-            and the Estimated Score card below it (see GamesList) absorbs
-            whatever vertical space is left over. */}
-        <Stack spacing={2} sx={{ width: LEFT_COLUMN_WIDTH_PX, flexShrink: 0, maxWidth: "100%", minHeight: 0 }}>
-        <Card variant="outlined" sx={{ p: 2, flexShrink: 0, position: "relative" }}>
-          <LockOverlay
-            active={scoreConfig.confirmed}
-            label="Redo Scoring to make changes"
-            onClick={() => setRedoDialogOpen(true)}
-          />
-          <Typography variant="overline" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-            Scoring Determination
-          </Typography>
-
-          <Stack spacing={2}>
-            <FormControl size="small" fullWidth disabled={computing || scoreConfig.confirmed}>
-              <InputLabel id="score-method-label">Method</InputLabel>
-              <Select
-                labelId="score-method-label"
-                label="Method"
-                value={scoreConfig.method}
-                renderValue={(value) => METHOD_LABELS[value as ScoreMethod]}
-                onChange={(e: SelectChangeEvent) => {
-                  const nextMethod = e.target.value as ScoreMethod;
-                  void saveConfig({ method: nextMethod });
-                  if (nextMethod === "ocr") setOcrDialogOpen(true);
-                }}
-              >
-                {(Object.keys(METHOD_LABELS) as ScoreMethod[]).map((method) => (
-                  <MenuItem key={method} value={method} sx={{ flexDirection: "column", alignItems: "flex-start", py: 1 }}>
-                    <Typography variant="body2">{METHOD_LABELS[method]}</Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "normal" }}>
-                      {METHOD_DESCRIPTIONS[method]}
-                    </Typography>
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-
-            {scoreConfig.method !== "none" && (
-              <>
-                <Autocomplete
-                  size="small"
-                  disabled={computing || scoreConfig.confirmed}
-                  options={teams}
-                  value={teamX}
-                  getOptionLabel={(t) => t.name}
-                  isOptionEqualToValue={(a, b) => a.id === b.id}
-                  onChange={(_, value) => void saveConfig({ team_x_id: value?.id ?? null })}
-                  renderInput={(params) => <TextField {...params} label="Team 1" />}
-                />
-                <Autocomplete
-                  size="small"
-                  disabled={computing || scoreConfig.confirmed}
-                  options={teams}
-                  value={teamY}
-                  getOptionLabel={(t) => t.name}
-                  isOptionEqualToValue={(a, b) => a.id === b.id}
-                  onChange={(_, value) => void saveConfig({ team_y_id: value?.id ?? null })}
-                  renderInput={(params) => <TextField {...params} label="Team 2 (optional)" />}
-                />
-              </>
-            )}
-
-            {scoreConfig.method === "ocr" && (
-              <Stack spacing={0.5}>
-                <Button
-                  variant="outlined"
-                  fullWidth
-                  disabled={computing || scoreConfig.confirmed}
-                  sx={{ py: 1.25 }}
-                  onClick={() => setOcrDialogOpen(true)}
-                >
-                  {scoreConfig.ocr_region ? "Change scoreboard region" : "Set scoreboard region"}
-                </Button>
-                {!scoreConfig.ocr_region && (
-                  <Typography variant="caption" color="text.secondary">
-                    Required before Computer Vision can run.
-                  </Typography>
-                )}
-              </Stack>
-            )}
-
-            {(scoreConfig.method === "automatic" || scoreConfig.method === "ocr") && (
-              <>
-                <FormControl size="small" fullWidth disabled={computing || scoreConfig.confirmed}>
-                  <InputLabel id="score-range-label">Range</InputLabel>
-                  <Select
-                    labelId="score-range-label"
-                    label="Range"
-                    value={rangeType}
-                    onChange={(e: SelectChangeEvent) => setRangeType(e.target.value as RangeType)}
-                  >
-                    {(Object.keys(RANGE_LABELS) as RangeType[]).map((type) => (
-                      <MenuItem key={type} value={type}>
-                        {RANGE_LABELS[type]}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-
-                {rangeType !== "match" && (
-                  <RangePicker
-                    rangeType={rangeType}
-                    rangeStart={rangeStart}
-                    rangeEnd={rangeEnd}
-                    upperBound={rangeType === "games" ? gameCount : rallies.length}
-                    disabled={computing || scoreConfig.confirmed}
-                    onChange={(start, end) => {
-                      setRangeStart(start);
-                      setRangeEnd(end);
-                    }}
-                  />
-                )}
-
-                <Button
-                  variant="contained"
-                  startIcon={computing ? <CircularProgress size={16} color="inherit" /> : <AnalyticsIcon />}
-                  disabled={
-                    computing || scoreConfig.confirmed || (scoreConfig.method === "ocr" && !scoreConfig.ocr_region)
-                  }
-                  onClick={() => void handleAnalyze()}
-                >
-                  {computing ? "Analyzing..." : "Analyze"}
-                </Button>
-                {scoreConfig.compute_status === "error" && (
-                  <Typography variant="body2" color="error">
-                    {scoreConfig.compute_error}
-                  </Typography>
-                )}
-                {foundNothing && (
-                  <Alert severity="warning">
-                    No winners could be determined for any rally.{" "}
-                    {scoreConfig.method === "ocr"
-                      ? "Double-check the marked scoreboard region - it may be misaligned, or the scoreboard may not be readable there."
-                      : "Ball tracking may not have produced usable data for this video."}
-                  </Alert>
-                )}
-              </>
-            )}
-          </Stack>
-        </Card>
-
-        {scoreResult && (
-          <GamesList
-            result={scoreResult}
-            rallies={rallies}
-            team1Name={team1Name}
-            team2Name={team2Name}
-            onSeek={onSeek}
-            confirmed={scoreConfig.confirmed}
-            onConfirm={handleConfirmScoring}
-            onRequestRedo={() => setRedoDialogOpen(true)}
-            onResetAll={handleResetScores}
-          />
-        )}
-        </Stack>
-
-        {/* The video + track stacked as one right-hand column, sharing the
+          100% above): the video + track stacked together as one unit on
+          the left, and the Scoring Determination + Estimated Score card on
+          the right. Within the video column, the track keeps its own
+          fixed height (TRACK_HEIGHT_PX, set in ScoreTrackEditor) and the
+          video is what flexes to fill whatever vertical space is left over
+          above it. The row layout only kicks in from "md" up - below that,
+          the fixed-width sidebar card would leave too little room for the
+          video next to it, so it drops below the video instead (which also
+          puts the video, the primary content, first on narrow screens). */}
+      <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ flex: 1, minHeight: 0 }}>
+        {/* The video + track stacked as one left-hand column, sharing the
             same left edge (no separate spacer needed - the track just sits
-            directly under the video in the same flex column now). The
-            video is flex: 1 so it absorbs whatever vertical space the
-            fixed-height track (see TRACK_HEIGHT_PX) doesn't use. */}
-        <Stack sx={{ flex: 1, minWidth: 0, height: "100%" }}>
-          <Box sx={{ flex: 1, minHeight: 0, overflow: "hidden" }}>{videoElement}</Box>
+            directly under the video in the same flex column now). On "md"
+            up (row layout) the video is flex: 1 so it absorbs whatever
+            vertical space the fixed-height track (see TRACK_HEIGHT_PX)
+            doesn't use, sized against the sidebar card's own height. On
+            "xs" (column layout, sidebar card dropped below - see the
+            comment above this Stack) there's no sibling height to size
+            against, so the video instead sizes itself from its own aspect
+            ratio and the sidebar card below picks up flex: 1 to stretch
+            into whatever space that leaves, matching the row layout's
+            stretch instead of just shrinking to its own content height. */}
+        <Stack sx={{ flex: { xs: "0 0 auto", md: 1 }, minWidth: 0, height: { xs: "auto", md: "100%" } }}>
+          <Box
+            sx={{
+              flex: { xs: "0 0 auto", md: 1 },
+              aspectRatio: { xs: "16 / 9", md: "auto" },
+              minHeight: 0,
+              overflow: "hidden",
+            }}
+          >
+            {videoElement}
+          </Box>
 
           {scoreConfig.method === "none" ? (
             <Typography color="text.secondary" sx={{ pt: 1 }}>
@@ -849,7 +717,7 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
                 team2Name={team2Name}
                 currentTime={currentTime}
                 onSeek={onSeek}
-                onToggleGameBoundary={handleToggleBoundary}
+                onToggleSetBoundary={handleToggleBoundary}
                 onSetWinner={handleSetWinner}
               />
             </Box>
@@ -859,6 +727,223 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
             </Typography>
           )}
         </Stack>
+
+        {/* Scoring Estimation and Estimated Score share a single card
+            now rather than sitting in two stacked boxes: a fixed-height
+            Method/Team/Range/Analyze section up top (position: relative so
+            its own LockOverlay only covers that section), a Divider, then
+            the Estimated Score section (see SetsList) absorbing whatever
+            height is left over (flex: 1 below), with only its own set list
+            scrolling internally. On "md" up this stretches to match the
+            video column's height via the row's default alignItems; on "xs"
+            (dropped below the video column - see that Stack's own comment)
+            it instead needs its own flex: 1 to get the same stretch-to-fill
+            behavior along the column layout's main axis. */}
+        <Card
+          variant="outlined"
+          sx={{
+            width: SIDEBAR_WIDTH_PX,
+            flexShrink: 0,
+            flexGrow: { xs: 1, md: 0 },
+            maxWidth: "100%",
+            minHeight: 0,
+            p: 2,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <Box sx={{ flexShrink: 0, position: "relative" }}>
+            <LockOverlay
+              active={scoreConfig.confirmed}
+              label="Redo Scoring to make changes"
+              onClick={() => setRedoDialogOpen(true)}
+            />
+            <Typography variant="overline" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+              Scoring Estimation
+            </Typography>
+
+            <Stack spacing={2}>
+              <FormControl size="small" fullWidth disabled={computing || scoreConfig.confirmed}>
+                <InputLabel id="score-method-label">Method</InputLabel>
+                <Select
+                  labelId="score-method-label"
+                  label="Method"
+                  value={scoreConfig.method}
+                  renderValue={(value) => METHOD_LABELS[value as ScoreMethod]}
+                  onChange={(e: SelectChangeEvent) => {
+                    const nextMethod = e.target.value as ScoreMethod;
+                    void saveConfig({ method: nextMethod });
+                  }}
+                >
+                  {(Object.keys(METHOD_LABELS) as ScoreMethod[]).map((method) => (
+                    <MenuItem key={method} value={method} sx={{ flexDirection: "column", alignItems: "flex-start", py: 1 }}>
+                      <Typography variant="body2">{METHOD_LABELS[method]}</Typography>
+                      <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "normal" }}>
+                        {METHOD_DESCRIPTIONS[method]}
+                      </Typography>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              {scoreConfig.method !== "none" && (
+                <>
+                  <Autocomplete
+                    size="small"
+                    disabled={computing || scoreConfig.confirmed}
+                    options={teams}
+                    value={teamX}
+                    getOptionLabel={(t) => t.name}
+                    isOptionEqualToValue={(a, b) => a.id === b.id}
+                    onChange={(_, value) => void saveConfig({ team_x_id: value?.id ?? null })}
+                    renderInput={(params) => <TextField {...params} label="Team 1" />}
+                  />
+                  <Autocomplete
+                    size="small"
+                    disabled={computing || scoreConfig.confirmed}
+                    options={teams}
+                    value={teamY}
+                    getOptionLabel={(t) => t.name}
+                    isOptionEqualToValue={(a, b) => a.id === b.id}
+                    onChange={(_, value) => void saveConfig({ team_y_id: value?.id ?? null })}
+                    renderInput={(params) => <TextField {...params} label="Team 2 (optional)" />}
+                  />
+                </>
+              )}
+
+              {scoreConfig.method === "ocr" && (
+                <Stack spacing={0.5}>
+                  <Button
+                    variant="outlined"
+                    fullWidth
+                    disabled={computing || scoreConfig.confirmed}
+                    sx={{ py: 1.25 }}
+                    onClick={() => setOcrDialogOpen(true)}
+                  >
+                    {scoreConfig.ocr_region ? "Change scoreboard region" : "Set scoreboard region"}
+                  </Button>
+                  {!scoreConfig.ocr_region && (
+                    <Typography variant="caption" color="text.secondary">
+                      Required before Computer Vision can run.
+                    </Typography>
+                  )}
+                </Stack>
+              )}
+
+              {scoreConfig.method === "automatic" && (
+                <Stack spacing={0}>
+                  <FormControlLabel
+                    sx={{ ml: 0 }}
+                    disabled={computing || scoreConfig.confirmed}
+                    control={
+                      <Switch
+                        size="small"
+                        checked={scoreConfig.invert_side}
+                        onChange={(e) => void saveConfig({ invert_side: e.target.checked })}
+                      />
+                    }
+                    label={<Typography variant="body2">Invert side</Typography>}
+                  />
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+                    Flips which side of the net the ball-tracking heuristic treats as which, in case
+                    it's guessing backwards for this video.
+                  </Typography>
+                  <FormControlLabel
+                    sx={{ ml: 0 }}
+                    disabled={computing || scoreConfig.confirmed}
+                    control={
+                      <Switch
+                        size="small"
+                        checked={scoreConfig.match_alternating_sides}
+                        onChange={(e) => void saveConfig({ match_alternating_sides: e.target.checked })}
+                      />
+                    }
+                    label={<Typography variant="body2">Match alternating</Typography>}
+                  />
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                    When a set can't tell which team is on which side from tracking alone, assume
+                    sides simply alternated from the nearest set that could.
+                  </Typography>
+                </Stack>
+              )}
+
+              {(scoreConfig.method === "automatic" || scoreConfig.method === "ocr") && (
+                <>
+                  <FormControl size="small" fullWidth disabled={computing || scoreConfig.confirmed}>
+                    <InputLabel id="score-range-label">Range</InputLabel>
+                    <Select
+                      labelId="score-range-label"
+                      label="Range"
+                      value={rangeType}
+                      onChange={(e: SelectChangeEvent) => setRangeType(e.target.value as RangeType)}
+                    >
+                      {(Object.keys(RANGE_LABELS) as RangeType[]).map((type) => (
+                        <MenuItem key={type} value={type}>
+                          {RANGE_LABELS[type]}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+
+                  {rangeType !== "match" && (
+                    <RangePicker
+                      rangeType={rangeType}
+                      rangeStart={rangeStart}
+                      rangeEnd={rangeEnd}
+                      upperBound={rangeType === "sets" ? setCount : rallies.length}
+                      disabled={computing || scoreConfig.confirmed}
+                      onChange={(start, end) => {
+                        setRangeStart(start);
+                        setRangeEnd(end);
+                      }}
+                    />
+                  )}
+
+                  <Button
+                    variant="contained"
+                    startIcon={computing ? <CircularProgress size={16} color="inherit" /> : <AnalyticsIcon />}
+                    disabled={
+                      computing || scoreConfig.confirmed || (scoreConfig.method === "ocr" && !scoreConfig.ocr_region)
+                    }
+                    onClick={() => void handleAnalyze()}
+                  >
+                    {computing ? "Analyzing..." : "Analyze"}
+                  </Button>
+                  {scoreConfig.compute_status === "error" && (
+                    <Typography variant="body2" color="error">
+                      {scoreConfig.compute_error}
+                    </Typography>
+                  )}
+                  {foundNothing && (
+                    <Alert severity="warning">
+                      No winners could be determined for any rally.{" "}
+                      {scoreConfig.method === "ocr"
+                        ? "Double-check the marked scoreboard region - it may be misaligned, or the scoreboard may not be readable there."
+                        : "Ball tracking may not have produced usable data for this video."}
+                    </Alert>
+                  )}
+                </>
+              )}
+            </Stack>
+          </Box>
+
+          {scoreResult && scoreResult.sets.length > 0 && (
+            <>
+              <Divider sx={{ my: 2 }} />
+              <SetsList
+                result={scoreResult}
+                rallies={rallies}
+                team1Name={team1Name}
+                team2Name={team2Name}
+                onSeek={onSeek}
+                confirmed={scoreConfig.confirmed}
+                onConfirm={handleConfirmScoring}
+                onRequestRedo={() => setRedoDialogOpen(true)}
+                onResetAll={handleResetScores}
+              />
+            </>
+          )}
+        </Card>
       </Stack>
 
       <OcrRegionDialog
@@ -877,14 +962,14 @@ export function ScoreSection({ job, rallies, currentTime, onSeek, videoElement }
         }}
       />
 
-      {/* Shared by the "Redo Scoring" button (GamesList) and every
+      {/* Shared by the "Redo Scoring" button (SetsList) and every
           LockOverlay - whichever locked control the user clicks, it's this
           same dialog that opens, not a separate one per trigger. */}
       <Dialog open={redoDialogOpen} onClose={() => (redoing ? undefined : setRedoDialogOpen(false))}>
         <DialogTitle>Redo scoring?</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            This won't change any rally winners or game boundaries - it just unlocks the score for
+            This won't change any rally winners or set boundaries - it just unlocks the score for
             editing again until you confirm it once more.
           </DialogContentText>
         </DialogContent>

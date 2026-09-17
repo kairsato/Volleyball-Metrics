@@ -21,4 +21,14 @@ if errorlevel 1 (
 ) else (
     set "CADDY_EXE=caddy"
 )
-"%CADDY_EXE%" run --config Caddyfile
+
+REM With no hostname configured, Caddyfile's site address
+REM ({$DEV_HOSTNAME}, www.{$DEV_HOSTNAME}) would collapse to the literal,
+REM invalid hostname "www." and Caddy would refuse to start. Fall back to
+REM Caddyfile.local's self-signed :443 setup in that case.
+if "%DEV_HOSTNAME%"=="" (
+    set "CADDY_CONFIG=Caddyfile.local"
+) else (
+    set "CADDY_CONFIG=Caddyfile"
+)
+"%CADDY_EXE%" run --config "%CADDY_CONFIG%"

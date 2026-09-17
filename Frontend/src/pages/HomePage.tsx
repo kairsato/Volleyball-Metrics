@@ -7,7 +7,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { api } from "../lib/api";
 import type { Job } from "../lib/types";
-import { VideoGrid } from "../components/VideoGrid";
+import { GameGrid } from "../components/GameGrid";
 
 const RUNNING_STATUSES: Job["status"][] = ["processing", "finalizing", "awaiting_player_review"];
 const ATTENTION_STATUSES: Job["status"][] = ["error", "cancelled"];
@@ -36,10 +36,10 @@ function StatTile({ value, label }: { value: number; label: string }) {
 interface HomePageProps {
   jobs: Job[];
   onSelectJob: (jobId: string) => void;
-  onViewVideos: () => void;
+  onViewGames: () => void;
 }
 
-export function HomePage({ jobs, onSelectJob, onViewVideos }: HomePageProps) {
+export function HomePage({ jobs, onSelectJob, onViewGames }: HomePageProps) {
   const [asyncStats, setAsyncStats] = useState<AsyncStats>({ totalHits: 0, totalPlayers: 0 });
 
   const completed = jobs.filter((j) => j.status === "complete").length;
@@ -73,7 +73,7 @@ export function HomePage({ jobs, onSelectJob, onViewVideos }: HomePageProps) {
   return (
     <Box>
       <Grid container spacing={2} sx={{ mb: 5 }}>
-        <StatTile value={jobs.length} label="Videos" />
+        <StatTile value={jobs.length} label="Games" />
         <StatTile value={completed} label="Completed" />
         <StatTile value={inProgress} label="In progress" />
         <StatTile value={needsAttention} label="Needs attention" />
@@ -83,12 +83,12 @@ export function HomePage({ jobs, onSelectJob, onViewVideos }: HomePageProps) {
 
       <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", rowGap: 1, mb: 2 }}>
         <Typography variant="h5" sx={{ fontWeight: 600 }}>
-          Recent videos
+          Recent games
         </Typography>
-        {jobs.length > 0 && <Button onClick={onViewVideos}>View all in Videos</Button>}
+        {jobs.length > 0 && <Button onClick={onViewGames}>View all in Games</Button>}
       </Stack>
 
-      <VideoGrid jobs={recent} onSelectJob={onSelectJob} />
+      <GameGrid jobs={recent} onSelectJob={onSelectJob} />
     </Box>
   );
 }

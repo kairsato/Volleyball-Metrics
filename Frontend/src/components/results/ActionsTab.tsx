@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import Accordion from "@mui/material/Accordion";
+import AccordionDetails from "@mui/material/AccordionDetails";
+import AccordionSummary from "@mui/material/AccordionSummary";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
@@ -17,8 +20,11 @@ import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import PlaylistPlayIcon from "@mui/icons-material/PlaylistPlay";
-import type { ResultsOut } from "../../lib/types";
+import { api } from "../../lib/api";
+import { scrollElementToSectionTop } from "../../lib/scroll";
+import type { Rally, ResultsOut, ScoreOut, Set as VolleySet } from "../../lib/types";
 import type { FlatEvent } from "./types";
 import { formatTimestamp } from "./types";
 
@@ -28,6 +34,7 @@ interface ActionFilterPreset {
 }
 
 interface ActionsTabProps {
+  jobId: string;
   results: ResultsOut;
   flatEvents: FlatEvent[];
   currentTime: number;
@@ -36,7 +43,127 @@ interface ActionsTabProps {
   presetFilter?: ActionFilterPreset | null;
 }
 
-export function ActionsTab({ results, flatEvents, currentTime, onSeek, onPlayAll, presetFilter }: ActionsTabProps) {
+interface RallyGroup {
+  rally: Rally;
+  events: FlatEvent[];
+}
+
+// Bundles a rally's worth of (already-filtered) events under the rally they
+// belong to, in rally order - mirrors RalliesTab's own eventsByRally, but
+// keyed off the Rally objects themselves (not just the index) since the
+// set-grouping step below needs each rally's start/end index. Events with
+// no rally_index at all (outside any detected rally) never join a group -
+// they're rendered in their own "Other actions" table instead.
+function groupEventsByRally(events: FlatEvent[], rallies: Rally[]): { rallyGroups: RallyGroup[]; ungrouped: FlatEvent[] } {
+  const byRally = new Map<number, FlatEvent[]>();
+  const ungrouped: FlatEvent[] = [];
+  for (const event of events) {
+    if (event.rally_index === null) {
+      ungrouped.push(event);
+      continue;
+    }
+    const list = byRally.get(event.rally_index);
+    if (list) list.push(event);
+    else byRally.set(event.rally_index, [event]);
+  }
+  const rallyGroups = [...rallies]
+    .sort((a, b) => a.rally_index - b.rally_index)
+    .filter((r) => byRally.has(r.rally_index))
+    .map((rally) => ({ rally, events: byRally.get(rally.rally_index)! }));
+  return { rallyGroups, ungrouped };
+}
+
+// Same "ScoreOut.result.sets' start/end are rally_index values, not list
+// positions" grouping RalliesTab.groupBySet does, applied to rally groups
+// of events instead of bare rallies - every rally group that isn't covered
+// by any defined set falls into a single null-keyed bucket.
+function groupBySet(rallyGroups: RallyGroup[], sets: VolleySet[]): { set: VolleySet | null; rallyGroups: RallyGroup[] }[] {
+  if (sets.length === 0) {
+    return [{ set: null, rallyGroups }];
+  }
+
+  const sortedSets = [...sets].sort((a, b) => a.set_index - b.set_index);
+  const groups: { set: VolleySet | null; rallyGroups: RallyGroup[] }[] = sortedSets.map((set) => ({ set, rallyGroups: [] }));
+  const ungrouped: RallyGroup[] = [];
+
+  for (const rallyGroup of rallyGroups) {
+    const set = sortedSets.find(
+      (s) => rallyGroup.rally.rally_index >= s.start_rally_index && rallyGroup.rally.rally_index <= s.end_rally_index,
+    );
+    if (set) {
+      groups.find((g) => g.set === set)!.rallyGroups.push(rallyGroup);
+    } else {
+      ungrouped.push(rallyGroup);
+    }
+  }
+
+  if (ungrouped.length > 0) groups.push({ set: null, rallyGroups: ungrouped });
+  return groups.filter((g) => g.rallyGroups.length > 0);
+}
+
+interface ActionsTableProps {
+  events: FlatEvent[];
+  currentEvent: FlatEvent | null;
+  onSeek: (timeS: number) => void;
+}
+
+function ActionsTable({ events, currentEvent, onSeek }: ActionsTableProps) {
+  const currentRowRef = useRef<HTMLTableRowElement>(null);
+
+  useEffect(() => {
+    if (currentEvent && events.includes(currentEvent) && currentRowRef.current) {
+      scrollElementToSectionTop(currentRowRef.current);
+    }
+  }, [currentEvent, events]);
+
+  return (
+    <TableContainer component={Card} variant="outlined">
+      <Table size="small" stickyHeader>
+        <TableHead>
+          <TableRow>
+            <TableCell>Time</TableCell>
+            <TableCell>Player</TableCell>
+            <TableCell>Action</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {events.map((event) => {
+            const isCurrent = event === currentEvent;
+            return (
+              <TableRow
+                key={`${event.playerId}-${event.frame_idx}`}
+                ref={isCurrent ? currentRowRef : undefined}
+                hover
+                selected={isCurrent}
+                sx={{ cursor: "pointer" }}
+                onClick={() => onSeek(event.timestamp_s)}
+              >
+                <TableCell>{formatTimestamp(event.timestamp_s)}</TableCell>
+                <TableCell>{event.playerName}</TableCell>
+                <TableCell>{event.action_type}</TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
+}
+
+export function ActionsTab({ jobId, results, flatEvents, currentTime, onSeek, onPlayAll, presetFilter }: ActionsTabProps) {
+  const [score, setScore] = useState<ScoreOut | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getScore(jobId)
+      .then((res) => !cancelled && setScore(res))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId]);
+
   const actionTypes = useMemo(() => Array.from(new Set(flatEvents.map((e) => e.action_type))).sort(), [flatEvents]);
   const rallyIndices = useMemo(
     () =>
@@ -80,11 +207,15 @@ export function ActionsTab({ results, flatEvents, currentTime, onSeek, onPlayAll
     }
   }
 
-  const currentRowRef = useRef<HTMLTableRowElement>(null);
-
-  useEffect(() => {
-    if (currentEvent) currentRowRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [currentEvent]);
+  const { rallyGroups, ungrouped } = useMemo(
+    () => groupEventsByRally(filtered, results.rallies),
+    [filtered, results.rallies],
+  );
+  const setGroups = useMemo(
+    () => groupBySet(rallyGroups, score?.result?.sets ?? []),
+    [rallyGroups, score],
+  );
+  const showSetHeaders = setGroups.length > 1 || setGroups[0]?.set !== null;
 
   return (
     <Box>
@@ -162,38 +293,55 @@ export function ActionsTab({ results, flatEvents, currentTime, onSeek, onPlayAll
         )}
       </Box>
 
-      <TableContainer component={Card} variant="outlined">
-        <Table size="small" stickyHeader>
-          <TableHead>
-            <TableRow>
-              <TableCell>Time</TableCell>
-              <TableCell>Player</TableCell>
-              <TableCell>Action</TableCell>
-              <TableCell>Rally</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {filtered.map((event) => {
-              const isCurrent = event === currentEvent;
-              return (
-                <TableRow
-                  key={`${event.playerId}-${event.frame_idx}`}
-                  ref={isCurrent ? currentRowRef : undefined}
-                  hover
-                  selected={isCurrent}
-                  sx={{ cursor: "pointer" }}
-                  onClick={() => onSeek(event.timestamp_s)}
-                >
-                  <TableCell>{formatTimestamp(event.timestamp_s)}</TableCell>
-                  <TableCell>{event.playerName}</TableCell>
-                  <TableCell>{event.action_type}</TableCell>
-                  <TableCell>{event.rally_index !== null ? event.rally_index + 1 : "-"}</TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </TableContainer>
+      {filtered.length === 0 ? (
+        <Typography color="text.secondary">No actions match the current filters.</Typography>
+      ) : (
+        <Stack spacing={1.5}>
+          {ungrouped.length > 0 && (
+            <Box>
+              <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+                Other actions
+              </Typography>
+              <ActionsTable events={ungrouped} currentEvent={currentEvent} onSeek={onSeek} />
+            </Box>
+          )}
+
+          {setGroups.map(({ set, rallyGroups: groupRallyGroups }) =>
+            showSetHeaders ? (
+              <Accordion key={set?.set_index ?? "ungrouped"} defaultExpanded disableGutters>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography variant="subtitle2" color="text.secondary">
+                    {set ? `Set ${set.set_index + 1}` : "Other rallies"}
+                  </Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Stack spacing={2}>
+                    {groupRallyGroups.map(({ rally, events }) => (
+                      <Box key={rally.rally_index}>
+                        <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+                          Rally {rally.rally_index + 1}
+                        </Typography>
+                        <ActionsTable events={events} currentEvent={currentEvent} onSeek={onSeek} />
+                      </Box>
+                    ))}
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+            ) : (
+              <Stack key="flat" spacing={2}>
+                {groupRallyGroups.map(({ rally, events }) => (
+                  <Box key={rally.rally_index}>
+                    <Typography variant="body2" sx={{ fontWeight: 600, mb: 1 }}>
+                      Rally {rally.rally_index + 1}
+                    </Typography>
+                    <ActionsTable events={events} currentEvent={currentEvent} onSeek={onSeek} />
+                  </Box>
+                ))}
+              </Stack>
+            ),
+          )}
+        </Stack>
+      )}
     </Box>
   );
 }

@@ -9,14 +9,27 @@ from typing import Optional
 
 from . import config
 
-# Ordered so the frontend can render a progress list. Court calibration
-# used to run up front and lead this list; it's now a post-processing
-# Setup tab step (see calibration_router.py) that doesn't run as part of
-# processing, so it's no longer one of these stages.
+# Ordered so the frontend can render a progress list, AND so game_status
+# genuinely runs before player_tracking/ball_detection start - both read
+# game_status.json's rally windows (see Analysis/GameStatusDetection/
+# rallyWindows.py) to skip dead time between rallies entirely rather than
+# running their own (far more expensive) per-frame detection over the whole
+# video. game_status itself costs seconds; skipping the ~40-60% of a real
+# match that's typically dead time cuts the two most expensive stages by
+# roughly that fraction (measured on a real 5-minute match: 946s -> ~400s).
+# Missing game_status.json (this stage failed, or something ran these out
+# of order) falls back to "no restriction, track everything" the same way
+# missing court calibration always has - see rallyWindows.compute_track_
+# windows's own docstring - so a stage that finds nothing to gate on is
+# just slower, never wrong.
+#
+# Court calibration used to run up front and lead this list; it's now a
+# post-processing Setup tab step (see calibration_router.py) that doesn't
+# run as part of processing, so it's no longer one of these stages.
 PHASE_ONE_STAGES = [
+    "game_status",
     "player_tracking",
     "ball_detection",
-    "game_status",
     "action_detection",
 ]
 PHASE_TWO_STAGES = ["consolidating", "dashboard", "rendering", "transcoding"]

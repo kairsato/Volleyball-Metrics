@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
@@ -14,69 +14,27 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { Link as RouterLink } from "react-router-dom";
 import { api } from "../lib/api";
-import type { Job, TeamEntry } from "../lib/types";
+import type { PlayerProfileSummary, TeamEntry } from "../lib/types";
 import { PageHeader } from "../components/PageHeader";
 import { PlayerPhotoCarousel } from "../components/PlayerPhotoCarousel";
 
 interface IdentifiedPlayer {
   name: string;
-  // Every thumbnail found for this name across every video, not just the
-  // first one - lets the card slowly cross-fade between them instead of
-  // being stuck on whichever video happened to be processed first.
   thumbnails: string[];
   totalHits: number;
   ralliesParticipated: number;
-  videoCount: number;
+  gameCount: number;
 }
 
-async function loadIdentifiedPlayers(completeJobs: Job[]): Promise<IdentifiedPlayer[]> {
-  const perJob = await Promise.all(
-    completeJobs.map(async (job) => {
-      const [results, players] = await Promise.all([
-        api.getResults(job.id).catch(() => null),
-        api.getPlayers(job.id).catch(() => null),
-      ]);
-      return { results, players };
-    }),
-  );
-
-  const byName = new Map<string, IdentifiedPlayer>();
-
-  for (const { results, players } of perJob) {
-    const thumbByStableId = new Map<number, string | null>();
-    for (const p of players?.players ?? []) thumbByStableId.set(p.stable_id, p.thumbnail_base64);
-
-    if (!results) continue;
-    for (const [stableIdStr, stat] of Object.entries(results.players)) {
-      const name = stat.name?.trim();
-      if (!name) continue;
-
-      const existing = byName.get(name) ?? {
-        name,
-        thumbnails: [],
-        totalHits: 0,
-        ralliesParticipated: 0,
-        videoCount: 0,
-      };
-      existing.totalHits += stat.total_hits;
-      existing.ralliesParticipated += stat.rallies_participated;
-      existing.videoCount += 1;
-      const thumb = thumbByStableId.get(Number(stableIdStr));
-      if (thumb) existing.thumbnails.push(thumb);
-      byName.set(name, existing);
-    }
-  }
-
-  return Array.from(byName.values()).sort((a, b) => b.totalHits - a.totalHits);
+function toIdentifiedPlayer(p: PlayerProfileSummary): IdentifiedPlayer {
+  return {
+    name: p.name,
+    thumbnails: p.thumbnail_base64 ? [p.thumbnail_base64] : [],
+    totalHits: p.total_hits,
+    ralliesParticipated: p.rallies_participated,
+    gameCount: p.game_count,
+  };
 }
-
-// Module-level, so it survives unmount/remount - a repeat visit to this page
-// (nav away and back) with the same set of completed jobs shows the last
-// result instantly instead of re-running every completed job's getResults +
-// getPlayers calls from scratch again. Keyed by the completed-job-id set;
-// still revalidated in the background on every mount (see the effect below),
-// so this only removes the *wait*, not the eventual refetch.
-const identifiedPlayersCache = new Map<string, IdentifiedPlayer[]>();
 
 // Shared by every player tile on this page so the whole grid reads as one
 // consistent set of same-sized cards.
@@ -180,50 +138,34 @@ function AddPlayerDialog({
   );
 }
 
-interface PlayersPageProps {
-  jobs: Job[];
-}
-
-// Every named player at once, across every video - linked to from each
-// video's own Setup page so there's always a one-click way to see everyone
-// rather than just the people in whatever video you happen to be looking
+// Every named player at once, across every game - linked to from each
+// game's own Setup page so there's always a one-click way to see everyone
+// rather than just the people in whatever game you happen to be looking
 // at. Naming/merging/ignoring still-unidentified detections happens on
-// that per-video Setup page now, not here.
-export function PlayersPage({ jobs }: PlayersPageProps) {
-  const completeJobs = jobs.filter((j) => j.status === "complete");
-  const completeJobIds = completeJobs.map((j) => j.id).join(",");
-
-  const [players, setPlayers] = useState<IdentifiedPlayer[] | null>(
-    () => identifiedPlayersCache.get(completeJobIds) ?? null,
-  );
+// that per-game Setup page now, not here.
+//
+// Backed entirely by Backend/API/player_profiles.py's persisted store
+// (api.getPlayerProfiles()) - one fast request instead of the
+// getResults+getPlayers-per-completed-job aggregation this page used to do
+// client-side on every visit.
+export function PlayersPage() {
+  const [players, setPlayers] = useState<IdentifiedPlayer[] | null>(null);
   const [roster, setRoster] = useState<string[]>([]);
   const [teams, setTeams] = useState<TeamEntry[]>([]);
   const [addPlayerOpen, setAddPlayerOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [teamFilter, setTeamFilter] = useState<string>("all");
 
-  const refresh = useCallback(() => {
-    return loadIdentifiedPlayers(completeJobs).then((result) => {
-      identifiedPlayersCache.set(completeJobIds, result);
-      setPlayers(result);
-    });
-    // completeJobIds is a stable proxy for completeJobs's identity - re-fetching
-    // on every jobs poll (which creates new array/object references every 3s)
-    // would otherwise refetch results/players for every completed video constantly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [completeJobIds]);
-
   useEffect(() => {
     let cancelled = false;
-    // Show a cached result (if any) immediately rather than flashing the
-    // loading skeleton on every revisit - refresh() below still runs
-    // regardless, so this is stale-while-revalidate, not a stale dead end.
-    setPlayers(identifiedPlayersCache.get(completeJobIds) ?? null);
-    refresh().catch(() => !cancelled && undefined);
+    api
+      .getPlayerProfiles()
+      .then((res) => !cancelled && setPlayers(res.players.map(toIdentifiedPlayer)))
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [refresh]);
+  }, []);
 
   useEffect(() => {
     api
@@ -237,15 +179,15 @@ export function PlayersPage({ jobs }: PlayersPageProps) {
   }, []);
 
   // Every roster name gets a card, whether or not it has stats yet - a
-  // name added to the roster (or typed while naming someone on a video,
-  // which adds it here too) but not yet attached to any finalized video
+  // name added to the roster (or typed while naming someone on a game,
+  // which adds it here too) but not yet attached to any finalized game
   // shows up as a zero-stat placeholder rather than not appearing at all.
   const allPlayers: IdentifiedPlayer[] = players
     ? [
         ...players,
         ...roster
           .filter((name) => !players.some((p) => p.name === name))
-          .map((name) => ({ name, thumbnails: [], totalHits: 0, ralliesParticipated: 0, videoCount: 0 })),
+          .map((name) => ({ name, thumbnails: [], totalHits: 0, ralliesParticipated: 0, gameCount: 0 })),
       ]
     : [];
 

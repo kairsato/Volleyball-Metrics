@@ -11,11 +11,11 @@ ideal." cv2.VideoWriter's own H.264 path isn't a fix either - it depends on
 a system OpenH264 codec DLL that isn't guaranteed to be present, and silently
 produces a 0-byte file when it's missing rather than failing loudly.
 
-Never upscales: a tier is only generated when its target height is smaller
-than the source's own height, so a lower-resolution source doesn't get a
-padded-out "480p" file that's really just a relabeled copy. The untouched
-source video itself always doubles as the "original" quality tier - no
-rendition file is ever written for that one.
+Never upscales: a downscale tier is only generated when its target height is
+smaller than the source's own height, so a lower-resolution source doesn't
+get a padded-out "480p" file that's really just a relabeled copy. The
+untouched source video itself always doubles as the "original" quality tier -
+no rendition file is ever written for that one.
 
 Best-effort by design: this stage runs after the analysis pipeline's real
 work is done, so a transcoding failure (corrupt frame, disk full, whatever)
@@ -28,15 +28,28 @@ from pathlib import Path
 import cv2
 import imageio_ffmpeg
 
-# height in pixels -> filename suffix. Order doesn't affect anything (each
-# tier is encoded independently, in its own ffmpeg invocation).
-TRANSCODE_TIERS = {"1080p": 1080, "720p": 720, "480p": 480}
+# tier name -> (target height in pixels, capped average video bitrate in
+# kbps). Exactly the qualities the Results page's selector offers alongside
+# "original" (the untouched upload, never re-encoded - see module
+# docstring). Each lower resolution gets a lower bitrate cap too, on top of
+# needing fewer bits per pixel just from being smaller - a 480p rendition
+# that was still allowed to spend 1080p-sized bits on a static wide shot like
+# this would barely save anything over the tier above it. Order doesn't
+# affect anything (each tier is encoded independently, in its own ffmpeg
+# invocation).
+TRANSCODE_TIERS: dict[str, tuple[int, int]] = {
+    "1080p": (1080, 5000),
+    "720p": (720, 2500),
+    "480p": (480, 1200),
+}
 
-# Standard libx264 quality/size tradeoff - visually near-lossless for footage
-# like this (a static wide shot, not high-motion close-ups), well-compressed.
-# Resolution reduction alone already does most of the file-size work between
-# tiers, so one CRF for all of them keeps this simple rather than needing a
-# separate "how much worse should the smallest tier look" judgment call.
+# Standard libx264 quality target - visually near-lossless for footage like
+# this (a static wide shot, not high-motion close-ups), well-compressed.
+# Combined with each tier's own maxrate/bufsize below (a "capped CRF"): CRF
+# picks the actual bitrate scene-by-scene for consistent visual quality,
+# while the cap only kicks in to clip rare spikes so a tier's file size stays
+# predictable and each lower tier is genuinely lower-bitrate than the one
+# above it, not just "lower resolution, same bits-per-pixel budget."
 CRF = 23
 # "veryfast" trades some compression efficiency for encode speed - this runs
 # as a post-processing nice-to-have after the real analysis work is already
@@ -48,6 +61,47 @@ PRESET = "veryfast"
 
 def rendition_filename(tier: str) -> str:
     return f"source_{tier}.mp4"
+
+
+def _encode_rendition(ffmpeg_exe: str, video_path, out_file: Path, target_height: int, maxrate_kbps: int, tier: str) -> bool:
+    """Encodes one rendition, returning whether it now exists (already did,
+    or was just successfully written). Written to a .tmp file first and
+    renamed into place once ffmpeg exits cleanly, so a mid-encode crash/kill
+    never leaves a partial file behind that a later "already exists" check
+    would wrongly treat as a finished rendition."""
+    if out_file.exists():
+        return True
+
+    tmp_file = out_file.with_suffix(".tmp.mp4")
+    try:
+        # scale=-2:H: keep the source aspect ratio, only constrain height -
+        # "-2" rounds the computed width to the nearest even number, which
+        # libx264's 4:2:0 chroma subsampling requires. maxrate/bufsize cap
+        # this tier's peak bitrate (bufsize = 2x maxrate is the usual
+        # capped-CRF rule of thumb) without abandoning CRF's per-scene
+        # quality targeting - see CRF's own comment above.
+        subprocess.run(
+            [
+                ffmpeg_exe, "-y", "-i", str(video_path),
+                "-vf", f"scale=-2:{target_height}",
+                "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF),
+                "-maxrate", f"{maxrate_kbps}k", "-bufsize", f"{maxrate_kbps * 2}k",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                str(tmp_file),
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        tmp_file.replace(out_file)
+        return True
+    except subprocess.CalledProcessError as exc:
+        print(f"transcode: failed to generate {tier} rendition: {exc.stderr.strip()[-2000:]}")
+        tmp_file.unlink(missing_ok=True)
+        return False
+    except Exception as exc:  # noqa: BLE001 - best-effort, see module docstring
+        print(f"transcode: failed to generate {tier} rendition: {exc}")
+        tmp_file.unlink(missing_ok=True)
+        return False
 
 
 def generate_renditions(video_path, output_path) -> list[str]:
@@ -67,45 +121,13 @@ def generate_renditions(video_path, output_path) -> list[str]:
     if source_height <= 0:
         return []
 
-    already_done = [tier for tier in TRANSCODE_TIERS if (output_path / rendition_filename(tier)).exists()]
-    tiers = [
-        (tier, h) for tier, h in TRANSCODE_TIERS.items()
-        if h < source_height and tier not in already_done
-    ]
-    if not tiers:
-        return already_done
-
     ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-    done = list(already_done)
-    for tier, target_height in tiers:
-        out_file = output_path / rendition_filename(tier)
-        tmp_file = out_file.with_suffix(".tmp.mp4")
-        try:
-            # scale=-2:H: keep the source aspect ratio, only constrain
-            # height - "-2" rounds the computed width to the nearest even
-            # number, which libx264's 4:2:0 chroma subsampling requires.
-            # Written to a .tmp file first and renamed into place once
-            # ffmpeg exits cleanly, so a mid-encode crash/kill never leaves
-            # a partial file behind that a later "already exists" check
-            # would wrongly treat as a finished rendition.
-            subprocess.run(
-                [
-                    ffmpeg_exe, "-y", "-i", str(video_path),
-                    "-vf", f"scale=-2:{target_height}",
-                    "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF),
-                    "-c:a", "aac", "-b:a", "128k",
-                    "-movflags", "+faststart",
-                    str(tmp_file),
-                ],
-                capture_output=True, text=True, check=True,
-            )
-            tmp_file.replace(out_file)
+    done = []
+
+    for tier, (target_height, maxrate_kbps) in TRANSCODE_TIERS.items():
+        if target_height < source_height and _encode_rendition(
+            ffmpeg_exe, video_path, output_path / rendition_filename(tier), target_height, maxrate_kbps, tier
+        ):
             done.append(tier)
-        except subprocess.CalledProcessError as exc:
-            print(f"transcode: failed to generate {tier} rendition: {exc.stderr.strip()[-2000:]}")
-            tmp_file.unlink(missing_ok=True)
-        except Exception as exc:  # noqa: BLE001 - best-effort, see module docstring
-            print(f"transcode: failed to generate {tier} rendition: {exc}")
-            tmp_file.unlink(missing_ok=True)
 
     return done

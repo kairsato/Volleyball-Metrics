@@ -4,7 +4,6 @@ import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
-import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
@@ -25,8 +24,13 @@ interface LoginGateProps {
 // event, dispatched whenever any API call gets a 401, so an expired/
 // revoked session drops back to this screen mid-use instead of the app
 // just silently failing every request after that.
+//
+// Renders the requested page optimistically (assuming no login is needed)
+// rather than blocking on the initial status check first - the common case
+// (login off, or already logged in) never sees a login screen flash in
+// front of the page it asked for. Only swaps to the login screen once the
+// check (or a live 401) actually confirms it's required.
 export function LoginGate({ children }: LoginGateProps) {
-  const [checking, setChecking] = useState(true);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [captcha, setCaptcha] = useState<Captcha | null>(null);
   const [password, setPassword] = useState("");
@@ -42,7 +46,7 @@ export function LoginGate({ children }: LoginGateProps) {
   }
 
   useEffect(() => {
-    checkStatus().finally(() => setChecking(false));
+    void checkStatus();
     // checkStatus is stable in the sense that matters here (it doesn't
     // close over any state that changes its behavior) - omitted from deps
     // to avoid re-running this on every render.
@@ -97,21 +101,6 @@ export function LoginGate({ children }: LoginGateProps) {
     }
   }
 
-  if (checking) {
-    return (
-      <Box sx={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", p: 2 }}>
-        <Card variant="outlined" sx={{ p: 4, width: "100%", maxWidth: 380 }}>
-          <Skeleton variant="text" width="70%" height={40} sx={{ mb: 3 }} />
-          <Stack spacing={2}>
-            <Skeleton variant="rounded" height={56} />
-            <Skeleton variant="rounded" height={120} sx={{ alignSelf: "center", width: "80%" }} />
-            <Skeleton variant="rounded" height={56} />
-            <Skeleton variant="rounded" height={36} />
-          </Stack>
-        </Card>
-      </Box>
-    );
-  }
   if (!needsLogin) return <>{children}</>;
 
   return (

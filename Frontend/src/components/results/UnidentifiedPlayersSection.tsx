@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import Alert from "@mui/material/Alert";
+import AlertTitle from "@mui/material/AlertTitle";
 import Autocomplete from "@mui/material/Autocomplete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -16,6 +19,7 @@ import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import CheckIcon from "@mui/icons-material/Check";
+import ZoomInIcon from "@mui/icons-material/ZoomIn";
 import CloseIcon from "@mui/icons-material/Close";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutlined";
 import PersonIcon from "@mui/icons-material/Person";
@@ -23,7 +27,7 @@ import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import UndoIcon from "@mui/icons-material/Undo";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import { api } from "../../lib/api";
-import type { Job, Player } from "../../lib/types";
+import type { CandidateGroup, Job, NamesUpdateOut, Player } from "../../lib/types";
 import { LockOverlay } from "../LockOverlay";
 import { CardTilesSkeleton } from "../Skeletons";
 import { RedoButton } from "./RedoButton";
@@ -58,19 +62,29 @@ function PlayerThumbnail({ player, showIdentificationBox = false }: { player: Pl
   );
 }
 
+// Shared by every tile so hovering any player thumbnail - unidentified,
+// identified, or ignored - always shows the same "which detection is this"
+// reference: its stable id (what candidate-match hints, undo actions, and
+// the raw player_positions.json log all key on) plus when its thumbnail was
+// captured.
+function playerHoverLabel(player: Player): string {
+  const timestamp = player.thumbnail_timestamp_s != null ? formatTimestamp(player.thumbnail_timestamp_s) : "unknown";
+  return `Player #${player.stable_id} · ${timestamp}`;
+}
+
 function UnidentifiedPlayerTile({
   player,
   selected,
   onSelect,
+  onPreview,
 }: {
   player: Player;
   selected: boolean;
   onSelect: () => void;
+  onPreview: () => void;
 }) {
   return (
-    <Tooltip
-      title={player.thumbnail_timestamp_s != null ? formatTimestamp(player.thumbnail_timestamp_s) : "Timestamp unknown"}
-    >
+    <Tooltip title={playerHoverLabel(player)}>
       <Card
         onClick={onSelect}
         variant="outlined"
@@ -82,10 +96,40 @@ function UnidentifiedPlayerTile({
           borderColor: selected ? "primary.main" : "divider",
           borderWidth: selected ? 2 : 1,
           transition: "border-color 0.1s ease",
+          // The magnifier is revealed on hover rather than always drawn, so
+          // a wall of tiles stays readable as photos; it is always present
+          // for keyboard/touch users, just transparent until focused.
+          "&:hover .preview-button, & .preview-button:focus-visible": { opacity: 1 },
         }}
       >
         <Box sx={{ position: "relative", width: "100%", height: PLAYER_TILE_HEIGHT, bgcolor: "action.hover" }}>
           <PlayerThumbnail player={player} showIdentificationBox />
+
+          <Tooltip title="See the whole frame this photo came from">
+            <IconButton
+              className="preview-button"
+              size="small"
+              aria-label={`See the whole frame player #${player.stable_id} was photographed in`}
+              // The tile itself toggles selection - opening the preview must
+              // not also select the player the reviewer was only inspecting.
+              onClick={(event) => {
+                event.stopPropagation();
+                onPreview();
+              }}
+              sx={{
+                position: "absolute",
+                top: 6,
+                left: 6,
+                opacity: 0,
+                transition: "opacity 0.1s ease",
+                bgcolor: "rgba(0, 0, 0, 0.55)",
+                color: "#fff",
+                "&:hover": { bgcolor: "rgba(0, 0, 0, 0.75)" },
+              }}
+            >
+              <ZoomInIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
           {selected && (
             <Box
               sx={{
@@ -121,19 +165,59 @@ function ResolvedPlayerTile({
   label,
   undoTooltip,
   onUndo,
+  onPreview,
   disabled,
 }: {
   player: Player;
   label: string;
   undoTooltip: string;
   onUndo: () => void;
+  onPreview: () => void;
   disabled: boolean;
 }) {
   return (
-    <Card variant="outlined" sx={{ width: PLAYER_TILE_WIDTH, flexShrink: 0, overflow: "hidden" }}>
-      <Box sx={{ position: "relative", width: "100%", height: PLAYER_TILE_HEIGHT * 0.6, bgcolor: "action.hover" }}>
-        <PlayerThumbnail player={player} />
-      </Box>
+    <Card
+      variant="outlined"
+      sx={{
+        width: PLAYER_TILE_WIDTH,
+        flexShrink: 0,
+        overflow: "hidden",
+        "&:hover .preview-button, & .preview-button:focus-visible": { opacity: 1 },
+      }}
+    >
+      <Tooltip title={playerHoverLabel(player)}>
+        <Box sx={{ position: "relative", width: "100%", height: PLAYER_TILE_HEIGHT * 0.6, bgcolor: "action.hover" }}>
+          <PlayerThumbnail player={player} />
+
+          {/* Ignored players deliberately arrive with no photo (see
+              players.list_players), so this is the only way to see who one
+              is before putting them back - and it costs a frame decode only
+              for the one a reviewer actually opens. */}
+          <Tooltip title="See the whole frame this player was detected in">
+            <IconButton
+              className="preview-button"
+              size="small"
+              aria-label={`See the whole frame player #${player.stable_id} was detected in`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onPreview();
+              }}
+              sx={{
+                position: "absolute",
+                top: 4,
+                left: 4,
+                opacity: player.thumbnail_base64 ? 0 : 1,
+                transition: "opacity 0.1s ease",
+                bgcolor: "rgba(0, 0, 0, 0.55)",
+                color: "#fff",
+                "&:hover": { bgcolor: "rgba(0, 0, 0, 0.75)" },
+              }}
+            >
+              <ZoomInIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        </Box>
+      </Tooltip>
       <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", px: 1, py: 0.5 }}>
         <Typography variant="caption" noWrap title={label} sx={{ flex: 1, minWidth: 0 }}>
           {label}
@@ -147,6 +231,110 @@ function ResolvedPlayerTile({
         </Tooltip>
       </Stack>
     </Card>
+  );
+}
+
+// One "these are probably all the same person" suggestion - see
+// API/services/players.build_candidate_groups for how the grouping is
+// built and why it is deliberately generous.
+//
+// Rendered above the flat Unidentified grid because acting on a group is
+// the thing that actually removes work: one name for a dozen tiles instead
+// of a dozen separate decisions on photos of the same player. Membership
+// stays fully editable - every thumbnail is the same toggle it is in the
+// grid below, so dropping the one tile that doesn't belong costs a click -
+// since a group is a suggestion the backend has committed nothing to. The
+// naming itself still goes through the ResolvePanel above, so there is
+// exactly one code path that writes names, and its simultaneous-name guard
+// applies to a group assign just as it does to a hand-picked selection.
+function SuggestedGroupCard({
+  group,
+  members,
+  selectedIds,
+  onToggle,
+  onPreview,
+  onSelectAll,
+  disabled,
+}: {
+  group: CandidateGroup;
+  members: Player[];
+  selectedIds: Set<number>;
+  onToggle: (stableId: number) => void;
+  onPreview: (player: Player) => void;
+  onSelectAll: () => void;
+  disabled: boolean;
+}) {
+  const allSelected = members.every((p) => selectedIds.has(p.stable_id));
+
+  return (
+    <Card variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, flexWrap: "wrap" }}>
+        <Typography variant="subtitle2">
+          {group.suggested_name ? `Probably ${group.suggested_name}` : "Probably the same person"}
+        </Typography>
+        <Chip size="small" label={`${members.length} photos`} />
+        <Tooltip title="How alike the least-similar pair in this group looks - the whole group is only as good as its weakest link">
+          <Chip size="small" variant="outlined" label={`${Math.round(group.confidence * 100)}%`} />
+        </Tooltip>
+        <Button size="small" onClick={onSelectAll} disabled={disabled || allSelected} sx={{ ml: "auto" }}>
+          {allSelected ? "All selected" : "Select all"}
+        </Button>
+      </Stack>
+
+      <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+        {members.map((player) => (
+          <UnidentifiedPlayerTile
+            key={player.stable_id}
+            player={player}
+            selected={selectedIds.has(player.stable_id)}
+            onSelect={() => !disabled && onToggle(player.stable_id)}
+            onPreview={() => onPreview(player)}
+          />
+        ))}
+      </Box>
+    </Card>
+  );
+}
+
+// The whole frame a tile's photo was cut from, with the same white box on
+// the subject - opened from a tile's magnifier. A 220px crop shows what
+// someone looks like but throws away everything a reviewer uses to place
+// them: who they were next to, where on the court, what was happening. The
+// image is fetched by the browser only when this opens (see
+// api.playerFrameUrl), never as part of the players payload.
+function PlayerFramePreview({
+  jobId,
+  player,
+  onClose,
+}: {
+  jobId: string;
+  player: Player | null;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open={player !== null} onClose={onClose} maxWidth="lg" fullWidth>
+      {player && (
+        <>
+          <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <span>Player #{player.stable_id}</span>
+            <Typography variant="body2" color="text.secondary">
+              {player.thumbnail_timestamp_s != null ? formatTimestamp(player.thumbnail_timestamp_s) : "unknown time"}
+            </Typography>
+            <IconButton size="small" onClick={onClose} sx={{ ml: "auto" }} aria-label="Close">
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          </DialogTitle>
+          <DialogContent>
+            <Box
+              component="img"
+              src={api.playerFrameUrl(jobId, player.stable_id)}
+              alt={`Whole frame containing player #${player.stable_id}`}
+              sx={{ width: "100%", height: "auto", display: "block", borderRadius: 1 }}
+            />
+          </DialogContent>
+        </>
+      )}
+    </Dialog>
   );
 }
 
@@ -184,6 +372,7 @@ function GroupSection({
 function ResolvePanel({
   selectedPlayers,
   roster,
+  suggestedName,
   onAssign,
   onIgnore,
   onClearSelection,
@@ -193,6 +382,9 @@ function ResolvePanel({
 }: {
   selectedPlayers: Player[];
   roster: string[];
+  // Pre-filled when the current selection is exactly one suggested group
+  // that already has a named member - see SuggestedGroupCard.
+  suggestedName: string | null;
   onAssign: (name: string) => void;
   onIgnore: () => void;
   onClearSelection: () => void;
@@ -205,9 +397,15 @@ function ResolvePanel({
   const visiblePlayers = selectedPlayers.slice(0, VISIBLE_THUMB_COUNT);
   const overflowCount = selectedPlayers.length - visiblePlayers.length;
 
+  // Seeding from the suggestion rather than making the reviewer retype a
+  // name the group already knows. Only re-runs when the selection empties
+  // or the suggestion itself changes (i.e. a different group was picked),
+  // so overriding it by hand and then adding/dropping a tile keeps the
+  // typed name.
   useEffect(() => {
     if (!hasSelection) setName("");
-  }, [hasSelection]);
+    else if (suggestedName) setName(suggestedName);
+  }, [hasSelection, suggestedName]);
 
   return (
     <Card variant="outlined" sx={{ p: 2, mb: 2 }}>
@@ -215,7 +413,7 @@ function ResolvePanel({
         {hasSelection ? (
           <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
             {visiblePlayers.map((p) => (
-              <Tooltip key={p.stable_id} title={`Player #${p.stable_id}`}>
+              <Tooltip key={p.stable_id} title={playerHoverLabel(p)}>
                 <Box sx={{ width: 40, height: 40, borderRadius: 1, overflow: "hidden", bgcolor: "action.hover", flexShrink: 0 }}>
                   <PlayerThumbnail player={p} showIdentificationBox />
                 </Box>
@@ -318,6 +516,10 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
   const [confirmed, setConfirmed] = useState(false);
   const [roster, setRoster] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [candidateGroups, setCandidateGroups] = useState<CandidateGroup[]>([]);
+  const [previewPlayer, setPreviewPlayer] = useState<Player | null>(null);
+  const [provisional, setProvisional] = useState(false);
+  const navigate = useNavigate();
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -327,6 +529,8 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
   const refresh = () =>
     api.getPlayers(job.id).then((res) => {
       setPlayers(res.players);
+      setCandidateGroups(res.candidate_groups);
+      setProvisional(res.provisional);
       setConfirmed(res.confirmed);
     });
 
@@ -369,6 +573,27 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
     );
   }
 
+  // Tracking deliberately keeps every detection and defers working out who
+  // is who until a court exists, since every signal that decides identity is
+  // court-derived (see API/services/players.identification_is_provisional).
+  // Showing the raw tracklets here would be thousands of tiles of the crowd.
+  if (provisional) {
+    return (
+      <Stack spacing={2} sx={{ maxWidth: 560 }}>
+        <Alert severity="info">
+          <AlertTitle>Calibrate the court first</AlertTitle>
+          Everyone on camera has been tracked, but who is who can&apos;t be worked out until the
+          court is marked - it&apos;s what separates the players from everyone else in the room, and
+          what tells one player&apos;s fragments from another&apos;s. Mark the court, then recalibrate
+          this video and the players will be here.
+        </Alert>
+        <Button variant="contained" onClick={() => navigate(`/game/setup/court-calibration?job=${job.id}`)}>
+          Go to court calibration
+        </Button>
+      </Stack>
+    );
+  }
+
   if (players.length === 0) {
     return <Typography color="text.secondary">No players were detected in this video.</Typography>;
   }
@@ -380,12 +605,55 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
   const selectedPlayers = unidentified.filter((p) => selectedIds.has(p.stable_id));
   const confirmDisabled = unidentified.length > 0;
 
-  async function resolve(action: () => Promise<void>) {
+  // Groups are resolved against the CURRENT unidentified tiles rather than
+  // the stable_ids the backend grouped, so naming or ignoring part of a
+  // group shrinks it here immediately (applyNamesUpdate never refetches)
+  // and a group whose members have all been dealt with disappears on its
+  // own. A group with only one tile left is no longer a grouping.
+  const byStableId = new Map(unidentified.map((p) => [p.stable_id, p]));
+  const suggestedGroups = candidateGroups
+    .map((group) => ({
+      group,
+      members: group.stable_ids.map((id) => byStableId.get(id)).filter((p): p is Player => p !== undefined),
+    }))
+    .filter(({ members }) => members.length > 1);
+  const groupedIds = new Set(suggestedGroups.flatMap(({ members }) => members.map((p) => p.stable_id)));
+  // Only offer a group's name once its whole group is selected - a partial
+  // selection is the reviewer disagreeing with the grouping, which is
+  // exactly when guessing a name for them would be wrong.
+  const selectedSuggestedName =
+    suggestedGroups.find(
+      ({ group, members }) =>
+        group.suggested_name && members.every((p) => selectedIds.has(p.stable_id)),
+    )?.group.suggested_name ?? null;
+  const ungrouped = unidentified.filter((p) => !groupedIds.has(p.stable_id));
+
+  // Applies a /players/names response locally instead of re-fetching the
+  // whole list (see resolve() below) - save_names/save_ignored on the
+  // backend both return the FULL current names/ignored state (not just
+  // what this request changed), so this is enough to bring every player's
+  // name/ignored flag fully up to date without touching thumbnail data at
+  // all (which never changes here, and is what makes a full refetch slow -
+  // GET /players re-reads this job's whole player_positions.json, which for
+  // a long match is hundreds of MB, just to re-derive images that already
+  // haven't changed).
+  function applyNamesUpdate(result: NamesUpdateOut) {
+    setPlayers((prev) =>
+      prev === null
+        ? prev
+        : prev.map((p) => ({
+            ...p,
+            name: result.names[String(p.stable_id)] ?? null,
+            ignored: result.ignored.includes(p.stable_id),
+          })),
+    );
+  }
+
+  async function resolve(action: () => Promise<NamesUpdateOut>) {
     setResolving(true);
     setResolveError(null);
     try {
-      await action();
-      await refresh();
+      applyNamesUpdate(await action());
       setSelectedIds(new Set());
     } catch (err) {
       setResolveError(err instanceof Error ? err.message : String(err));
@@ -396,30 +664,26 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
 
   function handleAssign(name: string) {
     if (selectedPlayers.length === 0) return;
-    void resolve(async () => {
+    void resolve(() => {
       const names = Object.fromEntries(selectedPlayers.map((p) => [String(p.stable_id), name]));
-      await api.updateNames(job.id, names, ignoredIds);
+      return api.updateNames(job.id, names, ignoredIds);
     });
   }
 
   function handleIgnore() {
     if (selectedPlayers.length === 0) return;
-    void resolve(async () => {
+    void resolve(() => {
       const ignored = [...ignoredIds, ...selectedPlayers.map((p) => p.stable_id)];
-      await api.updateNames(job.id, {}, ignored);
+      return api.updateNames(job.id, {}, ignored);
     });
   }
 
   function handleUnName(stableId: number) {
-    void resolve(async () => {
-      await api.updateNames(job.id, { [String(stableId)]: "" }, ignoredIds);
-    });
+    void resolve(() => api.updateNames(job.id, { [String(stableId)]: "" }, ignoredIds));
   }
 
   function handleUnIgnore(stableId: number) {
-    void resolve(async () => {
-      await api.updateNames(job.id, {}, ignoredIds.filter((id) => id !== stableId));
-    });
+    void resolve(() => api.updateNames(job.id, {}, ignoredIds.filter((id) => id !== stableId)));
   }
 
   function toggleSelected(stableId: number) {
@@ -467,10 +731,13 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
         onClick={() => setRedoDialogOpen(true)}
       />
 
+      <PlayerFramePreview jobId={job.id} player={previewPlayer} onClose={() => setPreviewPlayer(null)} />
+
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <ResolvePanel
           selectedPlayers={selectedPlayers}
           roster={roster}
+          suggestedName={selectedSuggestedName}
           onAssign={handleAssign}
           onIgnore={handleIgnore}
           onClearSelection={() => {
@@ -483,13 +750,48 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
         />
 
         <Stack spacing={3}>
-          <GroupSection title="Unidentified players" count={unidentified.length} emptyHint="Nothing waiting to be named.">
-            {unidentified.map((player) => (
+          {suggestedGroups.length > 0 && (
+            <Box>
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
+                <Typography variant="subtitle2">Suggested groups</Typography>
+                <Chip size="small" label={suggestedGroups.length} />
+                <Typography variant="caption" color="text.secondary">
+                  Photos that look like the same player - check them, then name the whole group at once
+                </Typography>
+              </Stack>
+              {suggestedGroups.map(({ group, members }) => (
+                <SuggestedGroupCard
+                  key={group.stable_ids.join("-")}
+                  group={group}
+                  members={members}
+                  selectedIds={selectedIds}
+                  onToggle={toggleSelected}
+                  onPreview={setPreviewPlayer}
+                  onSelectAll={() =>
+                    setSelectedIds((prev) => {
+                      const next = new Set(prev);
+                      members.forEach((p) => next.add(p.stable_id));
+                      return next;
+                    })
+                  }
+                  disabled={locked}
+                />
+              ))}
+            </Box>
+          )}
+
+          <GroupSection
+            title={suggestedGroups.length > 0 ? "Other unidentified players" : "Unidentified players"}
+            count={ungrouped.length}
+            emptyHint="Nothing waiting to be named."
+          >
+            {ungrouped.map((player) => (
               <UnidentifiedPlayerTile
                 key={player.stable_id}
                 player={player}
                 selected={selectedIds.has(player.stable_id)}
                 onSelect={() => !locked && toggleSelected(player.stable_id)}
+                onPreview={() => setPreviewPlayer(player)}
               />
             ))}
           </GroupSection>
@@ -502,6 +804,7 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
                 label={player.name ?? ""}
                 undoTooltip="Send back to Unidentified"
                 onUndo={() => handleUnName(player.stable_id)}
+                onPreview={() => setPreviewPlayer(player)}
                 disabled={locked}
               />
             ))}
@@ -515,6 +818,7 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
                 label="Ignored"
                 undoTooltip="Send back to Unidentified"
                 onUndo={() => handleUnIgnore(player.stable_id)}
+                onPreview={() => setPreviewPlayer(player)}
                 disabled={locked}
               />
             ))}
@@ -563,7 +867,7 @@ export function UnidentifiedPlayersSection({ job, onJobUpdated, onRedoPlayers }:
         <RedoButton
           label="Reset all players"
           confirmTitle="Reset all players?"
-          confirmText={`This clears every player name and ignored flag set for "${job.original_filename}" - everyone goes back to unidentified - and reprocesses its stats, dashboard, and video. This can't be undone.`}
+          confirmText={`This clears every player name and ignored flag set for "${job.original_filename}" and works out who the players are again from scratch, using the saved court to decide who was actually on it. The court calibration itself is kept. Stats, dashboard and video are reprocessed afterwards. This can't be undone.`}
           onConfirm={onRedoPlayers}
           disabled={locked}
           fullWidth

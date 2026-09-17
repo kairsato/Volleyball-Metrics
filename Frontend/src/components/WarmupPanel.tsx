@@ -37,6 +37,14 @@ export function WarmupPanel({ job, onSaved }: WarmupPanelProps) {
   const [redoDialogOpen, setRedoDialogOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // Quality switching is a standard part of the player wherever the source
+  // video plays (see ScoringDeterminationPage) - picking a rendition has no
+  // dependency on the warmup range itself, unlike the trajectory
+  // annotations below.
+  const [qualities, setQualities] = useState<string[]>(["original"]);
+  const [originalLabel, setOriginalLabel] = useState("Original");
+  const [quality, setQuality] = useState("original");
+
   useEffect(() => {
     let cancelled = false;
     api
@@ -47,6 +55,24 @@ export function WarmupPanel({ job, onSaved }: WarmupPanelProps) {
         setRange([res.start_s, res.end_s ?? res.duration_s ?? 0]);
       })
       .catch((err) => !cancelled && setLoadError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      cancelled = true;
+    };
+  }, [job.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getQualities(job.id)
+      .then((res) => {
+        if (cancelled) return;
+        setQualities(res.qualities);
+        setOriginalLabel(res.original_label);
+        const el = videoRef.current;
+        const stillAtStart = !el || (el.paused && el.currentTime === 0);
+        if (stillAtStart && res.qualities.length > 1) setQuality(res.qualities[res.qualities.length - 1]);
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -113,7 +139,25 @@ export function WarmupPanel({ job, onSaved }: WarmupPanelProps) {
         <LockOverlay active={locked} label="Redo Warmup Period to make changes" onClick={() => setRedoDialogOpen(true)} />
 
         <Box sx={{ flex: 1, minHeight: 0 }}>
-          <VideoPlayer videoRef={videoRef} src={api.sourceVideoUrl(job.id)} />
+          {/* Quality only, deliberately - not the ball/player tracking
+              annotations ScoringDeterminationPage/ResultsView offer. Those
+              endpoints report timestamps relative to the CONFIRMED warmup
+              start once one exists (see results_router.get_ball_trajectory),
+              while this player intentionally shows the raw, unbounded video
+              with no boundStartS of its own (see this component's own doc
+              comment - it's the tool used to SET that range, so it can't be
+              clamped to it). Once a range is confirmed those two clocks
+              would disagree by warmup_start_s seconds, silently drawing the
+              ball/player markers in the wrong place - not a risk worth
+              taking for annotations that aren't this page's own job. */}
+          <VideoPlayer
+            videoRef={videoRef}
+            src={api.sourceVideoUrl(job.id, quality)}
+            qualities={qualities}
+            quality={quality}
+            onQualityChange={setQuality}
+            originalQualityLabel={originalLabel}
+          />
         </Box>
 
         <Box sx={{ mt: 3, flexShrink: 0 }}>

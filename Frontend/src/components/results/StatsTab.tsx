@@ -50,27 +50,27 @@ function StatTile({ value, label }: { value: string | number; label: string }) {
 interface ScoreSummary {
   teamXName: string;
   teamYName: string;
-  gameWinners: ("x" | "y" | null)[];
-  gamesX: number;
-  gamesY: number;
+  setWinners: ("x" | "y" | null)[];
+  setsX: number;
+  setsY: number;
 }
 
-// Per-game winner (majority of that game's rallies) and the resulting
-// match record - the same "most rallies wins the game, most games wins the
+// Per-set winner (majority of that set's rallies) and the resulting
+// match record - the same "most rallies wins the set, most sets wins the
 // match" rollup Backend/API/score.py's compute_summary already applies
 // server-side for Job.winner_team_name, recomputed here so this tab can
-// show the game-by-game breakdown too, not just the final name.
+// show the set-by-set breakdown too, not just the final name.
 function summarizeScore(score: ScoreOut, teams: TeamEntry[]): ScoreSummary | null {
   if (!score.result) return null;
 
   const teamXName = teams.find((t) => t.id === score.config.team_x_id)?.name ?? "Team X";
   const teamYName = teams.find((t) => t.id === score.config.team_y_id)?.name ?? "Team Y";
 
-  const gameWinners: ("x" | "y" | null)[] = score.result.games.map((game) => {
+  const setWinners: ("x" | "y" | null)[] = score.result.sets.map((matchSet) => {
     let x = 0;
     let y = 0;
     for (const rally of score.result!.rallies) {
-      if (rally.game_index !== game.game_index) continue;
+      if (rally.set_index !== matchSet.set_index) continue;
       if (rally.winner === "x") x++;
       else if (rally.winner === "y") y++;
     }
@@ -81,9 +81,9 @@ function summarizeScore(score: ScoreOut, teams: TeamEntry[]): ScoreSummary | nul
   return {
     teamXName,
     teamYName,
-    gameWinners,
-    gamesX: gameWinners.filter((w) => w === "x").length,
-    gamesY: gameWinners.filter((w) => w === "y").length,
+    setWinners,
+    setsX: setWinners.filter((w) => w === "x").length,
+    setsY: setWinners.filter((w) => w === "y").length,
   };
 }
 
@@ -281,14 +281,14 @@ export function StatsTab({ jobId, results, flatEvents, onSeek, onJumpToAction }:
           </Stack>
           <Grid container spacing={2} sx={{ mb: 2 }}>
             <StatTile
-              value={`${scored.gamesX} - ${scored.gamesY}`}
-              label={`${scored.teamXName} vs ${scored.teamYName} (games)`}
+              value={`${scored.setsX} - ${scored.setsY}`}
+              label={`${scored.teamXName} vs ${scored.teamYName} (sets)`}
             />
             <StatTile
               value={
-                scored.gamesX === scored.gamesY
+                scored.setsX === scored.setsY
                   ? "Tied"
-                  : scored.gamesX > scored.gamesY
+                  : scored.setsX > scored.setsY
                     ? scored.teamXName
                     : scored.teamYName
               }
@@ -296,11 +296,11 @@ export function StatsTab({ jobId, results, flatEvents, onSeek, onJumpToAction }:
             />
           </Grid>
           <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
-            {scored.gameWinners.map((winner, i) => (
+            {scored.setWinners.map((winner, i) => (
               <Chip
                 key={i}
                 size="small"
-                label={`Game ${i + 1}: ${winner === "x" ? scored.teamXName : winner === "y" ? scored.teamYName : "unresolved"}`}
+                label={`Set ${i + 1}: ${winner === "x" ? scored.teamXName : winner === "y" ? scored.teamYName : "unresolved"}`}
                 color={winner ? "success" : "default"}
                 variant={winner ? "filled" : "outlined"}
               />

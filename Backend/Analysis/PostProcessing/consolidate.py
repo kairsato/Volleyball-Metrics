@@ -109,11 +109,18 @@ def consolidateStats(output_path, actions_filename=ACTIONS_LOG_NAME):
             # otherwise copies actions.json's records verbatim, so these are
             # always present there too; .get keeps this tolerant of a stale
             # actions.json from before these fields existed.
+            # [x1,y1,x2,y2] pixel box for this action - see
+            # ActionDetection.actionDetection's own action_box comment for
+            # what it's derived from. Lets a caller line this event up
+            # against a player-identification box from the same frame
+            # instead of only having player_stable_id to go on.
+            "action_box": action.get("action_box"),
             "speed_in_m_per_s": action.get("speed_in_m_per_s"),
             "speed_out_m_per_s": action.get("speed_out_m_per_s"),
             "real_units": action.get("real_units", False),
             "ball_height_m": action.get("ball_height_m"),
             "time_since_prev_touch_s": action.get("time_since_prev_touch_s"),
+            "contact_refined": action.get("contact_refined", False),
         })
 
     output = {"players": {}, "caveats": CAVEATS}

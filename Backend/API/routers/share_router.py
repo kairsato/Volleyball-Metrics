@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from .. import share
+from ..services import share
 from ..schemas import HostnameIn, ShareStatusOut
 
 router = APIRouter(prefix="/api/share", tags=["share"])

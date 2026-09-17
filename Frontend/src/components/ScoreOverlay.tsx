@@ -17,7 +17,7 @@ interface ScoreOverlayProps {
 // component's own doc comment for why that's the right level of detail
 // here) as of currentTimeS: every rally that has actually concluded by now
 // (its end_time_s has passed) and had a determined winner, tallied within
-// whichever game_index the most recent of those rallies belongs to.
+// whichever set_index the most recent of those rallies belongs to.
 export function computeCurrentScore(rallies: Rally[], scoreRallies: RallyWinner[], currentTimeS: number) {
   const timingByIndex = new Map(rallies.map((r) => [r.rally_index, r]));
 
@@ -30,23 +30,25 @@ export function computeCurrentScore(rallies: Rally[], scoreRallies: RallyWinner[
 
   if (concluded.length === 0) return null;
 
-  const gameIndex = concluded[concluded.length - 1].game_index;
+  const setIndex = concluded[concluded.length - 1].set_index;
   let x = 0;
   let y = 0;
   for (const sr of concluded) {
-    if (sr.game_index !== gameIndex) continue;
+    if (sr.set_index !== setIndex) continue;
     if (sr.winner === "x") x++;
     else if (sr.winner === "y") y++;
   }
-  return { gameIndex, x, y };
+  return { setIndex, x, y };
 }
 
-// A small top-left scoreboard (Minimap sits top-right, deliberately not
-// competing for the same corner) showing the CURRENT set's point score as
-// the video plays - not the full match record (sets won, other games'
-// final scores), which would need more screen space than a corner overlay
-// can spare; this is meant to answer "what's the score right now", the one
-// thing worth glancing at mid-rally.
+// A small top-CENTRE scoreboard - the one thing worth glancing at mid-rally
+// - showing the CURRENT set's point score as the video plays, not the full
+// match record (sets won, other sets' final scores), which would need more
+// screen space than a corner overlay can spare. Centred rather than
+// cornered like every other annotation (Game status top-left, Minimap
+// top-right) since it reads as a scoreboard - broadcast scoreboards sit
+// top-centre for the same reason, and it's the one annotation someone
+// actually watching the game (not debugging tracking) is likely to want on.
 export function ScoreOverlay({ rallies, scoreRallies, teamXName, teamYName, currentTimeS }: ScoreOverlayProps) {
   const score = computeCurrentScore(rallies, scoreRallies, currentTimeS);
   if (!score) return null;
@@ -56,7 +58,8 @@ export function ScoreOverlay({ rallies, scoreRallies, teamXName, teamYName, curr
       sx={{
         position: "absolute",
         top: 8,
-        left: 8,
+        left: "50%",
+        transform: "translateX(-50%)",
         zIndex: 1,
         pointerEvents: "none",
         borderRadius: 1,
@@ -67,7 +70,7 @@ export function ScoreOverlay({ rallies, scoreRallies, teamXName, teamYName, curr
       }}
     >
       <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.75)", display: "block", lineHeight: 1.2 }}>
-        Set {score.gameIndex + 1}
+        Set {score.setIndex + 1}
       </Typography>
       <Stack direction="row" spacing={1.25} sx={{ alignItems: "baseline" }}>
         <Typography variant="body2" noWrap sx={{ color: "#fff", fontWeight: 600, maxWidth: 120 }}>

@@ -4,12 +4,18 @@ import type {
   BallTrajectory,
   CalibrationPointsOut,
   Captcha,
+  GameStatusOut,
+  HeuristicsRegistry,
+  HeuristicsState,
+  HeuristicValues,
+  HeuristicProfile,
   Job,
   MatchupOut,
   NamesUpdateOut,
   OcrRegion,
   Point,
-  PlayerRadarOut,
+  PlayerProfile,
+  PlayerProfilesOut,
   PlayersListOut,
   PlayerTrajectory,
   QualitiesOut,
@@ -169,6 +175,15 @@ export const api = {
     return request<Job>(`/api/jobs/${jobId}/recalibrate`, { method: "POST" });
   },
 
+  // jobs_router.reset_players. Clears every name and ignored flag AND works
+  // the identities out again from scratch - the court gate, the zone/side
+  // weighting and the off-court auto-ignore all live in consolidation, so a
+  // reset that only cleared the files would hand back every raw detection
+  // with nothing ignored. Returns the job, now reprocessing.
+  resetPlayers(jobId: string): Promise<Job> {
+    return request<Job>(`/api/jobs/${jobId}/players/reset`, { method: "POST" });
+  },
+
   cancelJob(jobId: string): Promise<Job> {
     return request<Job>(`/api/jobs/${jobId}/cancel`, { method: "POST" });
   },
@@ -222,6 +237,13 @@ export const api = {
     });
   },
 
+  // The whole frame one player's thumbnail was cut from, boxed - an <img>
+  // src rather than a fetch, so the browser only pays the server's video
+  // seek for the player a reviewer actually opens, and caches it after.
+  playerFrameUrl(jobId: string, stableId: number): string {
+    return `/api/jobs/${jobId}/players/${stableId}/frame`;
+  },
+
   getPlayers(jobId: string): Promise<PlayersListOut> {
     return request<PlayersListOut>(`/api/jobs/${jobId}/players`);
   },
@@ -248,6 +270,22 @@ export const api = {
 
   getBallTrajectory(jobId: string): Promise<BallTrajectory> {
     return request<BallTrajectory>(`/api/jobs/${jobId}/ball-trajectory`);
+  },
+
+  getGameStatus(jobId: string): Promise<GameStatusOut> {
+    return request<GameStatusOut>(`/api/jobs/${jobId}/game-status`);
+  },
+
+  // Raw (not warmup-rebased) rally windows - see results_router.
+  // override_rallies. `rallies` only needs start_time_s/end_time_s; the
+  // server recomputes rally_index/start_frame/end_frame/duration_s and
+  // returns the full corrected GameStatusOut.
+  overrideRallies(jobId: string, rallies: { start_time_s: number; end_time_s: number }[]): Promise<GameStatusOut> {
+    return request<GameStatusOut>(`/api/jobs/${jobId}/game-status/rallies`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rallies }),
+    });
   },
 
   getPlayerTrajectory(jobId: string): Promise<PlayerTrajectory> {
@@ -306,8 +344,12 @@ export const api = {
     return request<TeamStatsOut>(`/api/teams/${teamId}/stats`);
   },
 
-  getPlayerRadar(name: string): Promise<PlayerRadarOut> {
-    return request<PlayerRadarOut>(`/api/players/${encodeURIComponent(name)}/radar`);
+  getPlayerProfiles(): Promise<PlayerProfilesOut> {
+    return request<PlayerProfilesOut>("/api/players/profiles");
+  },
+
+  getPlayerProfile(name: string): Promise<PlayerProfile> {
+    return request<PlayerProfile>(`/api/players/${encodeURIComponent(name)}/profile`);
   },
 
   async getScoreFrame(jobId: string, timestampS?: number): Promise<string> {
@@ -329,6 +371,8 @@ export const api = {
     teamYId: string | null,
     ocrRegion: OcrRegion | null,
     cvReverseDirection: boolean,
+    invertSide: boolean,
+    matchAlternatingSides: boolean,
     ocrMinConfidence: number,
   ): Promise<ScoreConfig> {
     return request<ScoreConfig>(`/api/jobs/${jobId}/score/config`, {
@@ -340,6 +384,8 @@ export const api = {
         team_y_id: teamYId,
         ocr_region: ocrRegion,
         cv_reverse_direction: cvReverseDirection,
+        invert_side: invertSide,
+        match_alternating_sides: matchAlternatingSides,
         ocr_min_confidence: ocrMinConfidence,
       }),
     });
@@ -368,7 +414,7 @@ export const api = {
 
   computeScore(
     jobId: string,
-    rangeType: "match" | "games" | "rallies" = "match",
+    rangeType: "match" | "sets" | "rallies" = "match",
     rangeStart?: number,
     rangeEnd?: number,
   ): Promise<ScoreConfig> {
@@ -379,8 +425,8 @@ export const api = {
     });
   },
 
-  setGameBoundary(jobId: string, rallyIndex: number, split: boolean): Promise<ScoreResult> {
-    return request<ScoreResult>(`/api/jobs/${jobId}/score/games/${rallyIndex}`, {
+  updateSetBoundary(jobId: string, rallyIndex: number, split: boolean): Promise<ScoreResult> {
+    return request<ScoreResult>(`/api/jobs/${jobId}/score/sets/${rallyIndex}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ split }),
@@ -524,5 +570,44 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ hostname }),
     });
+  },
+
+  // --- Configuration ---
+
+  getHeuristicsRegistry(): Promise<HeuristicsRegistry> {
+    return request<HeuristicsRegistry>("/api/configuration/registry");
+  },
+
+  getHeuristicsState(): Promise<HeuristicsState> {
+    return request<HeuristicsState>("/api/configuration/profiles");
+  },
+
+  createHeuristicProfile(name: string, baseProfileId?: string): Promise<HeuristicProfile> {
+    return request<HeuristicProfile>("/api/configuration/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, base_profile_id: baseProfileId ?? null }),
+    });
+  },
+
+  // `values` only needs to include the stages/params actually changing -
+  // everything else on the profile is left as-is (see ProfileUpdateIn).
+  updateHeuristicProfile(
+    profileId: string,
+    patch: { name?: string; values?: HeuristicValues },
+  ): Promise<HeuristicProfile> {
+    return request<HeuristicProfile>(`/api/configuration/profiles/${profileId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+  },
+
+  deleteHeuristicProfile(profileId: string): Promise<HeuristicsState> {
+    return request<HeuristicsState>(`/api/configuration/profiles/${profileId}`, { method: "DELETE" });
+  },
+
+  activateHeuristicProfile(profileId: string): Promise<HeuristicsState> {
+    return request<HeuristicsState>(`/api/configuration/profiles/${profileId}/activate`, { method: "POST" });
   },
 };

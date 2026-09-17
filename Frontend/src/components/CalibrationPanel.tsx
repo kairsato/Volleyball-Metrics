@@ -60,7 +60,7 @@ function LegendLine({ color, dashed }: { color: string; dashed?: boolean }) {
 // top edge above each net-line point. Everything else (the near baseline,
 // both attack lines) is predicted from the first 4, never marked directly.
 // The last 2 (net-top) are what make ball-height estimation possible at
-// all (see CourtDefinition.court.estimate_camera_pose) - optional in the
+// all (see CourtDetection.court.estimate_camera_pose) - optional in the
 // sense that leaving them at their preset skips height estimation entirely
 // rather than blocking the save, but always shown so a video with a
 // visible net gets height data without a separate opt-in step.
@@ -191,13 +191,15 @@ function dilateMax(src: Float32Array, w: number, h: number, radius: number): Flo
   return out;
 }
 
-// Mirrors the backend's default_points(): the far baseline (smaller,
-// further from the camera) sits higher and narrower than the net line
-// (closer, wider) - a typical sideline view's rough shape, just a
-// starting position to drag from. Chosen so the predicted near baseline
-// and both attack lines land within the visible frame for this starting
-// shape - a steeper far/close ratio pushes the predicted near baseline
-// far outside the frame before the user has even touched a point. The 2
+// Mirrors the backend's default_points(): the "far_left"/"far_right" marker
+// (actually the near baseline - this live canvas labels it "Close Line
+// Left/Right", see POINT_TITLES below, and that's the label a real person
+// actually follows) sits lower and wider than the net line, closer to the
+// camera - a typical sideline view's rough shape, just a starting position
+// to drag from. Chosen so the predicted far baseline and both attack lines
+// land within the visible frame for this starting shape - a preset with a
+// much steeper near/close ratio pushes the predicted far baseline far
+// outside the frame before the user has even touched a point. The 2
 // net-top points start directly above middle_left/middle_right
 // (NET_TOP_PRESET_OFFSET_PX higher, matching the backend constant of the
 // same name) - dragging them onto the actual net/antenna top is what
@@ -213,8 +215,8 @@ function presetPoints(width: number, height: number): Point[] {
   return [
     { x: midLeftX, y: midTop }, // middle_left
     { x: midRightX, y: midTop }, // middle_right
-    { x: width * 0.29, y: height * 0.35 }, // far_left
-    { x: width * 0.71, y: height * 0.35 }, // far_right
+    { x: width * 0.1, y: height * 0.8 }, // far_left (actually near - see comment above)
+    { x: width * 0.9, y: height * 0.8 }, // far_right
     { x: midLeftX, y: netTopY }, // net_top_left
     { x: midRightX, y: netTopY }, // net_top_right
   ];
@@ -833,7 +835,7 @@ export function CalibrationPanel({ job, onSaved }: CalibrationPanelProps) {
 
                 {/* Marked: net top edge, and its two vertical edges down to
                     the net line - what makes ball-height estimation
-                    possible (see CourtDefinition.court.estimate_camera_pose) */}
+                    possible (see CourtDetection.court.estimate_camera_pose) */}
                 <line x1={points[4].x} y1={points[4].y} x2={points[5].x} y2={points[5].y} className="net-top-line" />
                 <line x1={points[0].x} y1={points[0].y} x2={points[4].x} y2={points[4].y} className="net-top-line" />
                 <line x1={points[1].x} y1={points[1].y} x2={points[5].x} y2={points[5].y} className="net-top-line" />

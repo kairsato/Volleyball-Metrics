@@ -11,7 +11,7 @@ GAME_STATUS_LOG_NAME = "game_status.json"
 COURT_FILE_NAME = "court.json"
 ANNOTATED_VIDEO_NAME = "analysis.mp4"
 
-# Deliberately independent of CourtDefinition/PlayerDetection/BallDetection -
+# Deliberately independent of CourtDetection/PlayerDetection/BallDetection -
 # this only ever draws what those stages already computed and logged, so it
 # has no need for their (heavy: torch/ultralytics) imports just to render.
 
@@ -96,6 +96,27 @@ def draw_action_banner(frame, action, seconds_ago):
     label = f"{action['action_type'].upper()}{player_note}"
 
     cv2.putText(frame, label, (16, 75), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 230, 255), 2)
+
+
+def draw_action_highlight(frame, action, seconds_ago):
+    """Draws a highlighted box around the player/location credited with the
+    action (actions.json's action_box - see ActionDetection/actionDetection.py),
+    distinct from draw_players' per-frame tracking boxes so the specific
+    contact that triggered detection is visually obvious, not just named in
+    the top banner."""
+    if action["action_box"] is None:
+        return
+
+    fade = max(0.0, 1.0 - seconds_ago / ACTION_DISPLAY_SECONDS)
+    colour = (0, 230, 255)
+
+    x1, y1, x2, y2 = (int(v) for v in action["action_box"])
+    thickness = 1 + round(3 * fade)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thickness)
+
+    label = action["action_type"].upper()
+    cv2.putText(frame, label, (x1, max(0, y1 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
 
 
 def draw_court_minimap(frame, court_trail):
@@ -219,6 +240,7 @@ def renderAnnotatedVideo(video_path, output_path):
             seconds_ago = (frame_idx - last_action["frame_idx"]) / fps
             if 0 <= seconds_ago <= ACTION_DISPLAY_SECONDS:
                 draw_action_banner(frame, last_action, seconds_ago)
+                draw_action_highlight(frame, last_action, seconds_ago)
 
         draw_court_minimap(frame, court_trail)
 

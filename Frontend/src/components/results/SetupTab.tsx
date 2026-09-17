@@ -1,9 +1,9 @@
 import { useState, type ComponentType } from "react";
 import { useNavigate } from "react-router-dom";
 import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
-import CardActionArea from "@mui/material/CardActionArea";
 import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -13,17 +13,15 @@ import DialogTitle from "@mui/material/DialogTitle";
 import Divider from "@mui/material/Divider";
 import Stack from "@mui/material/Stack";
 import type { SxProps, Theme } from "@mui/material/styles";
-import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
-import CheckCircleOutlinedIcon from "@mui/icons-material/CheckCircleOutlined";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import EditIcon from "@mui/icons-material/Edit";
 import GridOnIcon from "@mui/icons-material/GridOn";
-import LockIcon from "@mui/icons-material/Lock";
 import PeopleAltIcon from "@mui/icons-material/PeopleAlt";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import ScoreboardIcon from "@mui/icons-material/Scoreboard";
 import TimerIcon from "@mui/icons-material/Timer";
-import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { api } from "../../lib/api";
 import { formatDuration, formatProcessedAt, PHASE_ONE_STAGES, PHASE_TWO_STAGES, STAGE_LABELS } from "../../lib/stages";
 import type { Job } from "../../lib/types";
@@ -34,16 +32,11 @@ interface SetupCardProps {
   description: string;
   needsAttention: boolean;
   // When true, the un-done state renders as a neutral "Not set" chip
-  // instead of the "Needs attention" warning - for a step that's genuinely
-  // opt-in (e.g. Warmup Period) rather than something every video is
-  // expected to eventually complete.
+  // instead of the "Automatically determined" chip - for a step that's
+  // genuinely opt-in (e.g. Warmup Period) and has no automatic value to
+  // speak of until the user sets one, rather than something every video
+  // gets an algorithmic answer for up front.
   optional?: boolean;
-  // Locked out entirely (dimmed, unclickable) until some prerequisite is
-  // met - e.g. Player Identification needs court calibration done first,
-  // since identification (and everything downstream of it) depends on
-  // knowing where the court actually is.
-  locked?: boolean;
-  lockedReason?: string;
   onClick: () => void;
 }
 
@@ -52,34 +45,43 @@ interface SetupCardProps {
 // same icon at alignItems: "flex-start" against a two-line title) used to
 // throw that off since a longer description made the row taller without
 // the icon and title actually sharing a center line.
-function SetupCard({ icon: Icon, title, description, needsAttention, optional, locked, lockedReason, onClick }: SetupCardProps) {
+//
+// The chip communicates provenance, not just completion: everything here
+// starts out algorithmic (tracking's own player guesses, an OCR/heuristic
+// score read, calibration's un-reviewed points) and stays labeled
+// "Automatically determined" until a human actually confirms or edits it,
+// at which point it becomes "User modified" - needsAttention is already
+// exactly "not yet confirmed" for every one of these steps (see each
+// step's own confirm() call), so no separate provenance flag is needed.
+function SetupCard({ icon: Icon, title, description, needsAttention, optional, onClick }: SetupCardProps) {
   return (
-    <Tooltip title={locked ? lockedReason ?? "" : ""}>
-      <Card variant="outlined" sx={{ opacity: locked ? 0.6 : 1 }}>
-        <CardActionArea onClick={onClick} disabled={locked} sx={{ p: 2.5 }}>
-          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", mb: 0.5 }}>
-            <Icon sx={{ color: locked ? "text.disabled" : "primary.main", fontSize: 28, flexShrink: 0 }} />
-            <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1 }}>
-              {title}
-            </Typography>
-            {locked ? (
-              <Chip size="small" color="default" variant="outlined" icon={<LockIcon />} label="Locked" />
-            ) : needsAttention ? (
-              optional ? (
-                <Chip size="small" color="default" variant="outlined" label="Not set" />
-              ) : (
-                <Chip size="small" color="warning" variant="outlined" icon={<WarningAmberIcon />} label="Needs attention" />
-              )
-            ) : (
-              <Chip size="small" color="success" variant="outlined" icon={<CheckCircleOutlinedIcon />} label="Done" />
-            )}
-          </Stack>
-          <Typography variant="body2" color="text.secondary">
-            {locked ? lockedReason : description}
+    <Card variant="outlined">
+      <Box sx={{ p: 2.5, pb: 1.5 }}>
+        <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", mb: 0.5 }}>
+          <Icon sx={{ color: "primary.main", fontSize: 28, flexShrink: 0 }} />
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, flex: 1 }}>
+            {title}
           </Typography>
-        </CardActionArea>
-      </Card>
-    </Tooltip>
+          {needsAttention ? (
+            optional ? (
+              <Chip size="small" color="default" variant="outlined" label="Not set" />
+            ) : (
+              <Chip size="small" color="warning" variant="outlined" icon={<AutoAwesomeIcon />} label="Automatically determined" />
+            )
+          ) : (
+            <Chip size="small" color="primary" variant="outlined" icon={<EditIcon />} label="User modified" />
+          )}
+        </Stack>
+        <Typography variant="body2" color="text.secondary">
+          {description}
+        </Typography>
+      </Box>
+      <Stack direction="row" sx={{ justifyContent: "flex-end", px: 2.5, pb: 2, pt: 0.5 }}>
+        <Button size="small" variant="outlined" onClick={onClick}>
+          Manually override
+        </Button>
+      </Stack>
+    </Card>
   );
 }
 
@@ -113,17 +115,17 @@ function ProcessingSection({ job }: { job: Job }) {
     try {
       await api.redoJob(job.id);
       await api.processJob(job.id);
-      // NOT navigate(`/video?job=${job.id}`) - that's the route this
+      // NOT navigate(`/game?job=${job.id}`) - that's the route this
       // component is already mounted on, so React Router wouldn't remount
       // anything: JobWorkspace's own job state (already fetched once as
       // "complete", which stopped its polling loop for good) never learns
       // about the fresh "processing" status, this dialog never closes, and
-      // the Setup tab just sits there looking unchanged forever. /videos is
+      // the Setup tab just sits there looking unchanged forever. /games is
       // a genuinely different route - it force-remounts, and its own
       // JobStatusChip is what actually shows live progress from here (same
       // pattern JobWorkspace.handleStartProcessing already uses to kick off
       // a fresh job's processing).
-      navigate("/videos");
+      navigate("/games");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setReprocessing(false);
@@ -174,16 +176,24 @@ function ProcessingSection({ job }: { job: Job }) {
         </Alert>
       )}
 
-      {/* Processing has no randomness in it - same video, same
-          calibration in, same tracking/stats out, always. Reprocessing
-          only actually changes anything if something feeding it changed
-          too (recalibrating, a newer model/build) - it's not a "try again,
-          maybe it tracks better this time" button, and shouldn't be
-          reached for expecting one. */}
+      {/* Processing has no randomness in it - same video, same calibration
+          in, same tracking/stats out, always - so it's not a "try again,
+          maybe it tracks better this time" button. But unlike a plain
+          recalibrate, reprocessing also clears the existing calibration
+          itself (see jobs_router._reset_for_full_reprocess) rather than
+          reapplying it, so "nothing changed" essentially never applies to a
+          reprocess the way it does to, say, re-finalizing - there's always
+          at least a fresh (uncalibrated) tracking pass to redo court setup
+          against afterward. Steering the "just want to fix calibration"
+          case toward the cheap path here, rather than after they've already
+          opened the reprocess dialog, is what keeps that dialog itself
+          focused on the one-way stuff (fresh player IDs) instead of
+          re-explaining this distinction too. */}
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Processing is deterministic: with nothing changed since the last run, reprocessing produces the
-        exact same results, not different ones. Only worth doing after recalibrating or changing the
-        source footage.
+        Processing is deterministic: given the same video and calibration, reprocessing always produces
+        the same results. Reprocessing clears the current court calibration along with everything else, so
+        if court calibration is the only thing that needs fixing, using the Court Calibration step above
+        is faster and leaves player names, groupings, and score corrections in place.
       </Typography>
 
       <Button color="warning" variant="outlined" startIcon={<RestartAltIcon />} onClick={() => setDialogOpen(true)}>
@@ -200,10 +210,12 @@ function ProcessingSection({ job }: { job: Job }) {
             there while it runs.
           </DialogContentText>
           <DialogContentText sx={{ mt: 1.5 }}>
-            Court calibration is kept and reapplied automatically. Player names/groupings and any score
-            corrections are not - tracking assigns fresh player IDs each run, so the old names would
-            otherwise end up attached to the wrong people; both will need to be redone from the Setup tab
-            afterward.
+            Court calibration, player names/groupings, and any score corrections are all cleared, not
+            carried forward - tracking assigns fresh player IDs each run, so old names would otherwise end
+            up attached to the wrong people, and calibration marked against the previous run has no
+            guaranteed relationship to this one. All three will need to be redone from the Setup tab
+            afterward - if calibration is the only thing you need to fix, recalibrating from the Court
+            Calibration step instead is much cheaper and keeps everything else.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
@@ -224,43 +236,54 @@ interface SetupTabProps {
 }
 
 // The Setup tab's landing view: one card per setup step, each just a title,
-// description, and a Done/Needs attention chip - the actual work for all
-// three happens on its own full page (Court Calibration, Player
-// Identification, Scoring Determination), reached via the same
-// /video/setup/<step>?job=<id> URL pattern.
+// description, and a chip showing whether it's still the algorithm's
+// unreviewed guess ("Automatically determined") or something a human has
+// confirmed/edited ("User modified") - the actual work for all four happens
+// on its own full page (Court Calibration, Player Identification, Scoring
+// Determination, Warmup Period), reached via the same
+// /game/setup/<step>?job=<id> URL pattern.
 //
-// Player Identification is locked until court calibration is done -
-// identification (and everything downstream of it) depends on knowing
-// where the court actually is, so there's nothing useful to do there
-// before calibration exists.
+// Player Identification used to be locked until court calibration was
+// done. It no longer is - the court boundary is itself only ever an
+// algorithmic best guess (see PlayerIdentificationPage's own warning
+// dialog), so gating one heuristic step behind another added friction
+// without actually guaranteeing accuracy. Court calibration is still
+// listed first since it's the natural place to start.
 export function SetupTab({ job }: SetupTabProps) {
   const navigate = useNavigate();
   const courtCalibrated = job.completed_stages.includes("court_calibration");
 
   return (
     <Stack spacing={2}>
+      <Alert severity="info">
+        Every stat on this page is computed from the values below. They come from tracking,
+        heuristics, and OCR - not a human - so they <strong>can be wrong</strong>. It's OK to
+        override any of them if something looks off; just expect stats to shift once you do.
+      </Alert>
       <SetupCard
         icon={GridOnIcon}
         title="Court Calibration"
         description="Mark the court boundary and net position so tracking can work out where players and the ball are."
         needsAttention={!courtCalibrated}
-        onClick={() => navigate(`/video/setup/court-calibration?job=${job.id}`)}
+        onClick={() => navigate(`/game/setup/court-calibration?job=${job.id}`)}
       />
       <SetupCard
         icon={PeopleAltIcon}
         title="Player Identification"
         description="Assign names to detected players, merge duplicates, or ignore false detections."
         needsAttention={job.needs_player_id}
-        locked={!courtCalibrated}
-        lockedReason="Court calibration must be completed first."
-        onClick={() => navigate(`/video/setup/player-identification?job=${job.id}`)}
+        onClick={() =>
+          navigate(`/game/setup/player-identification?job=${job.id}`, {
+            state: { showCourtAccuracyWarning: true },
+          })
+        }
       />
       <SetupCard
         icon={ScoreboardIcon}
         title="Scoring Determination"
-        description="Determine or correct the match score - who won each rally and how rallies group into games."
+        description="Determine or correct the match score - who won each rally and how rallies group into sets."
         needsAttention={job.needs_scoring_review}
-        onClick={() => navigate(`/video/setup/scoring-determination?job=${job.id}`)}
+        onClick={() => navigate(`/game/setup/scoring-determination?job=${job.id}`)}
       />
       <SetupCard
         icon={TimerIcon}
@@ -268,7 +291,7 @@ export function SetupTab({ job }: SetupTabProps) {
         description="Trim off pre-game warmup (or anything after the match) - footage, the video player, thumbnails, and every rally/stat outside that window are excluded everywhere."
         needsAttention={!job.warmup_confirmed}
         optional
-        onClick={() => navigate(`/video/setup/warmup-period?job=${job.id}`)}
+        onClick={() => navigate(`/game/setup/warmup-period?job=${job.id}`)}
       />
       <ProcessingSection job={job} />
     </Stack>
