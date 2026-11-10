@@ -22,6 +22,13 @@ Justed wanted free AI video analysis for volleyball with a user friendly interfa
 
 **NOTE:** This project had the use of generative AI.
 
+## Progress & Updates
+
+I haven't achieved all outline objectives as of yet and generally I have been using my own recorded data as main test cases. In terms of functionality key aspects such player identification and game state detection lack the necessary accuracy and speed for me to ever recommend this to anyone yet. Generally i have tried to leverage both heuristics and labeled data (both my own and outside sources) but even this get me around 85% accuracy and generally extremely long processing times. This isn't really sufficient as you generally would want statistics to be around 98% + to actually provide any useful statistics. Along side this I am also running this project with my own personal RTX 5090 and 64GB of RAM which far beyond average consumer pc with tested time for player identification alone reaching around 90 Minutes for typically 3set 4k video stream (match length 90 minutes). 
+
+In terms of future outlook once I acquire enough training data and maybe improve my own recording hardware I might be able to significant improve the accuracy,speed and generally usefulness of this project. If anyone is willing to link or give labeled data on sites like robotflow with open source licenses I believe this would go long way to improve this project.
+
+
 ## Objectives
 
 - Easy of Use
